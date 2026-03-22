@@ -41,22 +41,22 @@ Evaluate existing archive and container formats against the following criteria:
 
 ### Summary Table
 
-| Format | Popularity | Write-streaming (no patching) | Read-streaming (forward-only) | Interleaving: implementations | Interleaving: theoretical |
-|---|---|---|---|---|---|
-| TAR | ★★★★★ | ✅ Yes | ✅ Yes | ❌ None known | ❌ Not in spec |
-| CPIO | ★★★☆☆ | ✅ Yes | ✅ Yes | ❌ None known | ❌ Not in spec |
-| ar | ★★☆☆☆ | ✅ Yes | ✅ Yes | ❌ None known | ❌ Not in spec |
-| ZIP | ★★★★★ | ⚠️ Yes with data descriptors | ❌ Requires seek for central dir | ❌ None known | ❌ Not in spec |
-| 7-Zip | ★★★★☆ | ❌ No (must patch start header) | ❌ No | ❌ None known | ❌ Not in spec |
-| RAR | ★★★☆☆ | ⚠️ Partial (may need patching) | ⚠️ Partial | ❌ None known | ❌ Not in spec |
-| Ogg | ★★★☆☆ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec |
-| Matroska / MKV | ★★★★☆ | ⚠️ Yes if SeekHead omitted | ✅ Yes (without SeekHead) | ✅ Native interleaving | ✅ Yes — in spec |
-| WebM | ★★★☆☆ | ⚠️ Same as Matroska | ✅ Yes | ✅ Native interleaving | ✅ Yes — in spec |
-| MPEG-TS | ★★★★☆ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec |
-| MPEG-PS | ★★★☆☆ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec |
-| ASF / WMV / WMA | ★★★☆☆ | ⚠️ Header needs file size | ✅ Yes | ✅ Native interleaving | ✅ Yes — in spec |
-| CAF | ★★☆☆☆ | ✅ Yes (size -1 = unknown) | ✅ Yes | ✅ Audio tracks | ✅ Yes — in spec |
-| Framing (custom) | N/A | ✅ Yes | ✅ Yes | ✅ By design | ✅ By design |
+| Format | Year | Popularity | Write-streaming (no patching) | Read-streaming (forward-only) | Interleaving: implementations | Interleaving: theoretical |
+|---|---|---|---|---|---|---|
+| TAR | 1979 | ★★★★★ | ✅ Yes | ✅ Yes | ❌ None known | ❌ Not in spec |
+| CPIO | 1977 | ★★★☆☆ | ✅ Yes | ✅ Yes | ❌ None known | ❌ Not in spec |
+| ar | 1971 | ★★☆☆☆ | ✅ Yes | ✅ Yes | ❌ None known | ❌ Not in spec |
+| ZIP | 1989 | ★★★★★ | ⚠️ Yes with data descriptors | ❌ Requires seek for central dir | ❌ None known | ❌ Not in spec |
+| 7-Zip | 1999 | ★★★★☆ | ❌ No (must patch start header) | ❌ No | ❌ None known | ❌ Not in spec |
+| RAR | 1993 | ★★★☆☆ | ⚠️ Partial (may need patching) | ⚠️ Partial | ❌ None known | ❌ Not in spec |
+| Ogg | 2003 | ★★★☆☆ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec |
+| Matroska / MKV | 2002 | ★★★★☆ | ⚠️ Yes if SeekHead omitted | ✅ Yes (without SeekHead) | ✅ Native interleaving | ✅ Yes — in spec |
+| WebM | 2010 | ★★★☆☆ | ⚠️ Same as Matroska | ✅ Yes | ✅ Native interleaving | ✅ Yes — in spec |
+| MPEG-TS | 1995 | ★★★★☆ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec |
+| MPEG-PS | 1993 | ★★★☆☆ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec |
+| ASF / WMV / WMA | 1996 | ★★★☆☆ | ⚠️ Header needs file size | ✅ Yes | ✅ Native interleaving | ✅ Yes — in spec |
+| CAF | 2005 | ★★☆☆☆ | ✅ Yes (size -1 = unknown) | ✅ Yes | ✅ Audio tracks | ✅ Yes — in spec |
+| Framing (custom) | — | N/A | ✅ Yes | ✅ Yes | ✅ By design | ✅ By design |
 
 ---
 
@@ -418,6 +418,27 @@ This confirms that **embedding multiple streams inside a single archive/containe
 ---
 
 ## Conclusions and Recommendations
+
+### Which established format is the best fit?
+
+The ideal candidate would be a format as popular and well-established as ZIP or TAR, but with native support for both streaming write (no patching) and multi-stream interleaving. Unfortunately, **no archive format with ZIP/TAR-level ubiquity supports interleaving** — this is the core gap:
+
+- **TAR** (1979, ★★★★★) — streams perfectly but has zero interleaving support.
+- **ZIP** (1989, ★★★★★) — cannot even be read in a forward-only pass (Central Directory at end), let alone interleave.
+- **7-Zip** (1999, ★★★★☆) — requires patching the start header; no streaming at all.
+
+Among formats that **do** support both streaming and interleaving, ranked by establishment:
+
+| Rank | Format | Year | Popularity | All criteria met? |
+|---|---|---|---|---|
+| 1 | **MPEG-TS** | 1995 | ★★★★☆ | ✅ Yes — no patching, native interleaving, massive tooling |
+| 2 | **MPEG-PS** | 1993 | ★★★☆☆ | ✅ Yes — but declining adoption |
+| 3 | **Ogg** | 2003 | ★★★☆☆ | ✅ Yes — RFC 3533, cleanest spec for non-AV use |
+| 4 | **Matroska** | 2002 | ★★★★☆ | ⚠️ Conditional — needs SeekHead omitted for no-patch write |
+
+**MPEG-TS** (ISO 13818-1, 1995) is the oldest and most widely deployed format that meets all four criteria. It has 30 years of production use in digital television worldwide, tooling in every language (ffmpeg, GStreamer, VLC, hardware decoders), and its 188-byte fixed packet design was built for exactly this kind of unreliable forward-only streaming. The main drawback for general-purpose CLI use is its multimedia orientation — PID allocation, PAT/PMT tables, and PES framing add conceptual overhead when you just want to multiplex two byte streams.
+
+**Ogg** (RFC 3533, 2003) is the cleanest fit for non-multimedia use: its page structure (stream serial number + granule position) maps naturally to "stream N, chunk M" semantics without multimedia baggage. It is an IETF standard and has clean C (`libogg`), Rust, Python, and Go implementations. The trade-off is lower mainstream popularity — it is well-known in the open-source audio world but not a household name like ZIP.
 
 ### Best candidates for a multi-stream streaming pipe format
 
