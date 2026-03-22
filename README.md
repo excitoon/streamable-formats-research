@@ -735,7 +735,7 @@ Without tombstones, a reader that simply hits EOF cannot distinguish "the writer
 
 ### Best-in-class: formats with per-stream tombstones
 
-For multi-stream pipe use, the most important property is **per-stream finalization** — the reader must know when each individual logical stream is complete, not just the overall container. Five formats provide this natively:
+For advanced multi-stream pipe use where individual streams may finish independently, **per-stream finalization** provides the strongest guarantees — the reader knows when each individual logical stream is complete, not just the overall container. Five formats provide this natively (though a container-level tombstone is sufficient for most use cases):
 
 1. **Ogg** — each logical bitstream has an explicit **EOS (End of Stream) flag** in the last page's header for that stream. A reader can detect per-stream completion and distinguish it from truncation. The Ogg page CRC-32 also provides integrity checking for each page.
 
@@ -751,7 +751,11 @@ Formats like TAR (two zero blocks), CPIO (`TRAILER!!!`), and HTTP/1.1 chunked (z
 
 ### Implication for format choice
 
-Any format chosen for multi-stream piping **must** provide per-stream tombstones. This rules out MPEG-TS and FLV (no per-stream end markers) for use cases where clean termination detection matters. It reinforces **Ogg** (EOS flag), **HTTP/2 framing** (END_STREAM), **QUIC** (FIN bit), and **NUT** (EOR frame) as the strongest candidates. A custom LTV format **should** include an explicit end-of-stream frame type (e.g., a zero-length payload with a special tag, or a dedicated END frame type).
+At minimum, a multi-stream pipe format **must** provide a **container-level tombstone** — a marker that lets the reader distinguish "the writer finished cleanly" from "the writer crashed mid-stream." Formats like TAR (two zero blocks), CPIO (`TRAILER!!!`), and HTTP/1.1 chunked (zero-length chunk) already satisfy this requirement. A single container-level end marker is sufficient for most pipe use cases: if the tombstone is present, the reader knows all streams completed; if it's missing, the reader knows the writer was interrupted.
+
+Per-stream tombstones (Ogg EOS, HTTP/2 END_STREAM, NUT EOR, QUIC FIN) are a **nice-to-have** for advanced scenarios (e.g., one stream finishing early while others continue), but are not strictly necessary if the container-level marker covers the "did the whole pipeline succeed?" question.
+
+This means MPEG-TS and FLV (no end markers at all) remain ruled out for clean termination detection. But formats with container-level markers — including TAR — satisfy the tombstone requirement. A custom LTV format **should** include at least a container-level end marker (e.g., a zero-length sentinel or a dedicated END frame type).
 
 ---
 
@@ -908,23 +912,26 @@ These are proven and well-tooled but carry multimedia-specific framing (PIDs, PA
 
 ### Best candidates for a multi-stream streaming pipe format
 
-Evaluated on streaming (no patching), interleaving, general-purpose suitability, and **stream finalization (tombstones)** — the ability to distinguish clean completion from truncation on a per-stream basis.
+Evaluated on streaming (no patching), interleaving, general-purpose suitability, stream finalization (tombstones), and **7z extractability** — the ability to list/extract contents with standard archive tools.
 
-**Core finding**: No existing format is a perfect fit. Every candidate has a fundamental limitation — Ogg's tooling is multimedia-only, HTTP/2 and QUIC are complex binary protocols with unnecessary overhead, SSH requires encryption, and everything else either lacks interleaving or lacks tombstones. This is precisely why the "custom LTV / new spec" option exists: the gap is real.
+**Core finding**: **TAR with interleaved chunk members** emerges as the strongest practical candidate when 7z extractability and file names are requirements. It is the only format that satisfies all of: streaming, file names, 7z extractability, and container-level tombstone. Native multiplexing formats (Ogg, HTTP/2) have better framing but fail 7z extractability. A container-level tombstone (e.g., TAR's two zero blocks) is sufficient for truncation detection — per-stream tombstones are a nice-to-have but not strictly required.
 
-1. **Ogg** — the best fit **by specification** for general-purpose use. IETF standard (RFC 3533), explicitly general-purpose by spec, clean page-based multiplexing with CRC integrity, ~0.5–1% overhead, **per-stream EOS flag** for tombstones. **Binary** format (not human-readable). **Major practical limitation**: all existing tooling is multimedia-only — no archive utility recognizes Ogg for arbitrary data (`7z x file.ogg` won't work). Requires a clean-room page writer (~200 lines of C) and accepting that no existing ecosystem tool will help users inspect the result.
+1. **TAR (interleaved chunk members)** — the best practical candidate when 7z extractability and file names are hard requirements. ★★★★★ popularity, streamable (no patching), file names native, `7z l file.tar` works, container-level tombstone (two zero blocks) for truncation detection. "Interleaving" is achieved via naming convention (each chunk is a separate member, e.g., `.streams/output.csv/chunk-000001`). Trade-offs: ~0.8–12.5% overhead depending on chunk size, and a reassembly tool is needed to concatenate chunks back into per-stream files. See the **TAR-based interleaving workaround** section above for details.
 
-2. **Custom LTV framing** — minimal overhead (~0.01%), trivial to implement (8-byte header: stream_id + length), language-agnostic. **Binary** format (can be designed text-based if desired, e.g., using HTTP/1.1 chunked-style hex lengths). **Must include an explicit end-of-stream frame type** in the design to provide tombstone functionality. Best choice when no legacy format compatibility is needed and simplicity is paramount.
+2. **Ogg** — the best fit **by specification** for general-purpose use. IETF standard (RFC 3533), explicitly general-purpose by spec, clean page-based multiplexing with CRC integrity, ~0.5–1% overhead, **per-stream EOS flag** for tombstones. **Binary** format (not human-readable). **Major practical limitation**: all existing tooling is multimedia-only — no archive utility recognizes Ogg for arbitrary data (`7z x file.ogg` won't work). Requires a clean-room page writer (~200 lines of C) and accepting that no existing ecosystem tool will help users inspect the result.
 
-3. **MPEG-TS** — the most battle-tested streaming format (30 years, digital TV worldwide). **Binary** format. Best choice if multimedia tooling integration is desired or error-resilient sync recovery matters. **Lacks per-stream end markers** (by design, for broadcast) — truncation detection requires application-level signaling.
+3. **Custom LTV framing** — minimal overhead (~0.01%), trivial to implement (8-byte header: stream_id + length), language-agnostic. **Binary** format (can be designed text-based if desired, e.g., using HTTP/1.1 chunked-style hex lengths). **Should include a container-level end marker** in the design for tombstone functionality. Best choice when no legacy format compatibility is needed and simplicity is paramount.
 
-4. **HTTP/2 framing (inspiration)** — a **binary** protocol (the 9-byte frame header with **END_STREAM flag** and **GOAWAY** connection shutdown is worth studying as prior art for any new "mux" format). HTTP/2 is explicitly **not** a text format — it was designed as a binary replacement for HTTP/1.1's text-based framing. Using the full HTTP/2 spec directly is overkill; the framing layer design is the useful takeaway.
+4. **MPEG-TS** — the most battle-tested streaming format (30 years, digital TV worldwide). **Binary** format. Best choice if multimedia tooling integration is desired or error-resilient sync recovery matters. **Lacks end markers entirely** (by design, for broadcast) — truncation detection requires application-level signaling.
 
-5. **QUIC (inspiration)** — a **binary** transport protocol, the state-of-the-art in multiplexed transport (RFC 9000). Per-stream FIN bit, independent streams without HOL blocking, and 62-bit stream IDs represent the gold standard for multiplexing design. Like HTTP/2, useful as prior art rather than direct reuse.
+5. **HTTP/2 framing (inspiration)** — a **binary** protocol (the 9-byte frame header with **END_STREAM flag** and **GOAWAY** connection shutdown is worth studying as prior art for any new "mux" format). HTTP/2 is explicitly **not** a text format — it was designed as a binary replacement for HTTP/1.1's text-based framing. Using the full HTTP/2 spec directly is overkill; the framing layer design is the useful takeaway.
+
+6. **QUIC (inspiration)** — a **binary** transport protocol, the state-of-the-art in multiplexed transport (RFC 9000). Per-stream FIN bit, independent streams without HOL blocking, and 62-bit stream IDs represent the gold standard for multiplexing design. Like HTTP/2, useful as prior art rather than direct reuse.
 
 ### Non-starters for multi-stream use
 
-- **TAR, CPIO, ar, LHA/LZH, WARC** — sequential, no interleaving.
+- **CPIO, ar, LHA/LZH, WARC** — sequential, no interleaving, not 7z-extractable (except CPIO via some builds).
+- **TAR (plain sequential)** — native TAR is sequential; only the interleaved chunk member convention (see #1 above) enables multi-stream use.
 - **ZIP** — Central Directory at end breaks streaming read.
 - **7-Zip** — headers at end, no streaming.
 - **RAR** — proprietary, no interleaving.
@@ -1021,12 +1028,12 @@ Placing all requirements together:
 | Interleaving | ✅ (via naming convention) | ✅ Native | ✅ Native | ✅ By design | ✅ Native |
 | File names | ✅ Native (paths in headers) | ❌ Numeric IDs | ⚠️ Via HTTP headers | ✅ If designed in | ✅ Track names |
 | 7z extractable | ✅ `7z l file.tar` | ❌ | ❌ | ❌ | ❌ |
-| Per-stream tombstones | ❌ (container-level only) | ✅ EOS flag | ✅ END_STREAM | ✅ If designed in | ❌ |
+| Tombstone (end marker) | ✅ Two zero blocks | ✅ EOS flag (per-stream) | ✅ END_STREAM (per-stream) | ✅ If designed in | ❌ None |
 | Low overhead | ❌ (~0.8–12.5%) | ✅ (~0.5–1%) | ✅ (~0.05%) | ✅ (~0.01%) | ✅ (~0.1–1%) |
 
-**Core trade-off**: TAR is the **only** format that is simultaneously 7z-extractable, streaming-writable, and can carry file names — but it achieves "interleaving" only through a naming convention (each chunk is a separate TAR member), with significant overhead and no per-stream tombstones. Every native multiplexing format (Ogg, HTTP/2, QUIC, NUT) fails the 7z extractability test.
+**Core trade-off**: TAR is the **only** format that is simultaneously 7z-extractable, streaming-writable, can carry file names, and has a container-level tombstone (two zero blocks for truncation detection). It achieves "interleaving" through a naming convention (each chunk is a separate TAR member), with significant overhead vs custom LTV. Every native multiplexing format (Ogg, HTTP/2, QUIC, NUT) fails the 7z extractability test.
 
-**Practical conclusion**: If 7z extractability is a hard requirement, TAR with interleaved chunk members is the only viable path — accepting its overhead and the need for a reassembly tool. If 7z extractability can be relaxed (e.g., a dedicated `mux` tool is acceptable), then a custom LTV format with file name support and per-stream tombstones is the cleanest solution.
+**Practical conclusion**: **TAR with interleaved chunk members is the strongest candidate** when 7z extractability and file names are hard requirements. It satisfies streaming (no patching), interleaving (via naming convention), file names (native), 7z extractability, and truncation detection (two zero blocks as tombstone). The trade-offs are overhead (~0.8–12.5% depending on chunk size) and the need for a reassembly tool to reconstruct per-stream files from chunks. If 7z extractability can be relaxed (e.g., a dedicated `mux` tool is acceptable), then a custom LTV format remains the lowest-overhead option.
 
 ### Open questions / TBD
 
