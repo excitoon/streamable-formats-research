@@ -63,6 +63,17 @@ Evaluate existing archive and container formats against the following criteria:
 | ISO 9660 | 1988 | ★★★★☆ | ❌ No (requires pre-computed sector layout) | ❌ No (random-access by design) | ❌ None known | ❌ Not in spec |
 | WIM | 2006 | ★★★☆☆ | ❌ No (must patch header with resource table offset) | ❌ No | ❌ None known | ❌ Not in spec |
 | CAB | 1997 | ★★★☆☆ | ❌ No (header contains folder/file counts and offsets) | ⚠️ Partial (forward scan possible) | ❌ None known | ❌ Not in spec |
+| MP4 / ISOBMFF | 2001 | ★★★★★ | ⚠️ Only fragmented MP4 (fMP4) | ⚠️ Only fragmented MP4 | ✅ Native interleaving | ✅ Yes — in spec (ISO 14496-12) |
+| AVI / RIFF | 1992 | ★★★★☆ | ❌ No (RIFF header needs total size) | ⚠️ Partial (index at end) | ✅ Native interleaving | ✅ Yes — in spec |
+| IFF | 1985 | ★★☆☆☆ | ⚠️ Chunk sizes needed upfront | ✅ Yes | ❌ None known | ❌ Not in spec |
+| FLV | 2002 | ★★★☆☆ | ✅ Yes | ✅ Yes | ✅ Native interleaving | ✅ Yes — in spec |
+| WARC | 2009 | ★★★☆☆ | ✅ Yes | ✅ Yes | ❌ None known | ❌ Sequential records |
+| XAR | 2007 | ★★☆☆☆ | ❌ No (XML TOC at beginning references heap) | ❌ No | ❌ None known | ❌ Not in spec |
+| NUT | 2003 | ★☆☆☆☆ | ✅ Yes | ✅ Yes | ✅ Native interleaving | ✅ Yes — in spec |
+| Avro OCF | 2009 | ★★★☆☆ | ✅ Yes | ✅ Yes | ❌ None known | ❌ Single schema per file |
+| Protobuf (delimited) | 2008 | ★★★★☆ | ✅ Yes | ✅ Yes | ❌ None known | ⚠️ Possible with field tags |
+| QUIC | 2021 | ★★★★☆ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec (RFC 9000) |
+| LHA / LZH | 1988 | ★★☆☆☆ | ✅ Yes | ✅ Yes | ❌ None known | ❌ Not in spec |
 | Framing (custom) | — | N/A | ✅ Yes | ✅ Yes | ✅ By design | ✅ By design |
 
 ---
@@ -447,6 +458,204 @@ HTTP/1.1 chunked encoding is valuable **as prior art for framing design** (hex-l
 
 ---
 
+#### MP4 / ISOBMFF (ISO Base Media File Format)
+
+**Popularity**: ★★★★★ — the dominant multimedia container format today. Used for `.mp4`, `.m4a`, `.m4v`, DASH streaming, Apple HLS (fragmented MP4), and the basis for HEIF/AVIF image containers. Specified in ISO 14496-12.
+
+**Format overview**: ISOBMFF structures data as a hierarchy of **boxes** (atoms). A regular MP4 file has a `moov` box (movie metadata: track descriptions, sample tables, chunk offsets) and one or more `mdat` boxes (actual media data). The `moov` box contains absolute byte offsets (`stco`/`co64` entries) pointing into `mdat`. **Fragmented MP4** (fMP4) replaces the monolithic `moov`/`mdat` structure with a sequence of **fragments**: each fragment has a `moof` (Movie Fragment) box followed by an `mdat` box. The `moof` contains relative offsets within its own `mdat`, enabling sequential writing.
+
+**Sequential-write streaming**: ⚠️ **Only fragmented MP4 (fMP4)** — regular MP4 requires the `moov` box (which contains byte offsets into `mdat`) to be written either before or after the media data, requiring either pre-computation of sizes or seeking back to patch. With fMP4, each `moof`+`mdat` pair is self-contained and can be written incrementally. This is how DASH and HLS live streaming work.
+
+**Sequential-read streaming**: ⚠️ **Only fragmented MP4** — regular MP4 with `moov` at end requires seeking. With `moov` at start (and no `stco` patching), forward reading works but writing required pre-computation. fMP4 fragments can be read sequentially.
+
+**Chunk interleaving (implementations)**: ✅ Yes — native to the format. In regular MP4, audio and video samples within `mdat` are interleaved by chunk offsets. In fMP4, each fragment can contain samples from multiple tracks interleaved. All major tools (`ffmpeg`, `MP4Box`, `Bento4`) produce interleaved output.
+
+**Chunk interleaving (theoretical)**: ✅ Fully specified in ISO 14496-12. Track interleaving is a core design feature.
+
+**Conclusion for multi-stream use**: fMP4 is technically capable of streaming and interleaving, and is the basis for modern live video delivery. However, the box/atom structure is complex, multimedia-specific (track descriptions, timescales, sample flags), and requires understanding of ISO 14496-12 to produce valid output. Not practical for general-purpose data multiplexing.
+
+---
+
+#### AVI / RIFF (Resource Interchange File Format)
+
+**Popularity**: ★★★★☆ — AVI was the dominant video container on Windows from 1992 through the mid-2000s. RIFF (the parent format) is also used for WAV audio and WebP images. Still widely supported but largely superseded by MP4/MKV for new content.
+
+**Format overview**: RIFF is a tagged chunk format developed by Microsoft and IBM in 1991, inspired by EA's IFF (1985). Every chunk has a 4-byte FourCC type identifier and a 4-byte little-endian size. Chunks are grouped into `LIST` containers. AVI (`RIFF 'AVI '`) uses a `LIST 'hdrl'` (header list with stream descriptions), a `LIST 'movi'` (interleaved audio/video chunks identified by stream index: `00dc` for video stream 0, `01wb` for audio stream 1, etc.), and an optional `idx1` index at the end. RIFF itself is conceptually general-purpose — any FourCC-tagged data can be placed in chunks.
+
+**Sequential-write streaming**: ❌ Not supported — **RIFF header requires total size**. The outermost RIFF chunk header contains the total file size (minus 8 bytes). While the interleaved data chunks in `LIST 'movi'` can be written sequentially, the top-level RIFF size and the `LIST 'movi'` size must either be pre-computed or patched. OpenDML extensions (AVI 2.0) allow `AVIX` continuation chunks for files > 2 GB but still require size fields.
+
+**Sequential-read streaming**: ⚠️ Partial. The `LIST 'movi'` chunks can be read forward-only by scanning FourCC+size pairs. However, the `idx1` index at the end is needed for seeking, and the header must be parsed first for stream descriptions.
+
+**Chunk interleaving (implementations)**: ✅ Yes — native to the format. AVI interleaves audio and video chunks within `LIST 'movi'`: a typical layout alternates `00dc` (video frame), `01wb` (audio chunk), `00dc`, `01wb`, etc. All AVI muxers (`ffmpeg`, `VirtualDub`, `mencoder`) produce interleaved output.
+
+**Chunk interleaving (theoretical)**: ✅ Fully specified. RIFF's chunk model allows arbitrary interleaving of differently-typed chunks.
+
+**Conclusion for multi-stream use**: RIFF/AVI's chunk model is conceptually general-purpose (FourCC-tagged chunks), but the mandatory size fields in RIFF/LIST headers prevent true streaming. Interleaving is native and well-proven. Historically important as one of the first widely-deployed interleaved containers, but not suitable for pipe use due to header size requirements.
+
+---
+
+#### IFF (Interchange File Format)
+
+**Popularity**: ★★☆☆☆ — created by Electronic Arts in 1985 for the Amiga platform. Historically significant as the **first widely-used general-purpose tagged container format**. Influenced RIFF/AVI/WAV (Microsoft's adaptation) and by extension the entire family of chunk-based containers. Used for Amiga IFF/ILBM images, 8SVX audio, AIFF audio (Apple's adaptation). Rarely encountered today outside retro computing.
+
+**Format overview**: IFF uses a simple chunk structure: each chunk has a 4-byte type ID and a 4-byte big-endian size, followed by that many bytes of data. Chunks are grouped into `FORM`, `LIST`, or `CAT ` (concatenation) containers, each of which also has a type+size header. The format is explicitly designed as a general-purpose data interchange standard — the 1985 specification describes it as "a standard for interchange of data between programs." IFF was one of the first formats to use the now-ubiquitous type-length-value (TLV) pattern for structured binary data.
+
+**Sequential-write streaming**: ⚠️ Conditional. Each chunk's size must be known when its header is written. If chunk sizes are known upfront (e.g., fixed-size records), no patching is needed. If sizes are unknown, the writer must either buffer the entire chunk or seek back to patch the size field. `FORM`/`LIST`/`CAT ` group sizes have the same constraint.
+
+**Sequential-read streaming**: ✅ Supported. Chunks can be read sequentially by reading type+size, then skipping or processing size bytes.
+
+**Chunk interleaving (implementations)**: ❌ None known. IFF files typically contain a single `FORM` with sequential chunks.
+
+**Chunk interleaving (theoretical)**: ❌ Not in spec. While `CAT ` groups could theoretically contain interleaved `FORM`s, the spec does not describe interleaving.
+
+**Conclusion for multi-stream use**: Historically important as the progenitor of TLV-based container formats (RIFF, AVI, AIFF). The chunk model is general-purpose by design, but mandatory upfront chunk sizes prevent streaming of variable-length data, and no interleaving mechanism exists.
+
+---
+
+#### FLV (Flash Video)
+
+**Popularity**: ★★★☆☆ — was the dominant web video format from ~2005–2012 (YouTube, Twitch, etc., before the shift to MP4/DASH/HLS). Still used internally by RTMP streaming (which carries FLV-structured data). Declining in relevance since Adobe discontinued Flash in 2020.
+
+**Format overview**: FLV has a 9-byte file header followed by a sequence of **FLV tags**. Each tag has a 1-byte type (0x08=audio, 0x09=video, 0x12=script data), a 3-byte data size, a 4-byte timestamp (3 bytes + 1 extension byte), a 3-byte stream ID (always 0 in practice), and then the tag data. After each tag, a 4-byte "PreviousTagSize" field enables backward scanning. The flat tag sequence design was specifically chosen for streaming — FLV was built for progressive download and live RTMP streaming.
+
+**Sequential-write streaming**: ✅ Fully supported — no patching needed. Each tag is self-contained (type + size + timestamp + data) and can be written immediately. No header fields reference future byte offsets.
+
+**Sequential-read streaming**: ✅ Fully supported. Tags can be demultiplexed in a single forward pass.
+
+**Chunk interleaving (implementations)**: ✅ Yes — native to the format. Audio tags and video tags (and script data tags) are interleaved by timestamp in the tag sequence. All FLV muxers (`ffmpeg`, Flash Media Server, OBS/RTMP) produce interleaved output.
+
+**Chunk interleaving (theoretical)**: ✅ Fully specified. The tag-based structure with type field is designed for interleaved audio/video delivery.
+
+**Conclusion for multi-stream use**: FLV's flat tag structure is one of the simplest streaming-capable interleaved formats. However, the stream ID field (always 0 in practice) was never used for multi-stream multiplexing — FLV carries one audio + one video + one data stream per file. The format is also deprecated and tightly tied to the Flash/RTMP ecosystem.
+
+---
+
+#### WARC (Web ARChive Format)
+
+**Popularity**: ★★★☆☆ — the standard format for web archiving, used by the Internet Archive's Wayback Machine, national libraries, Common Crawl, and all major web archiving tools. ISO 28500:2017 standardized.
+
+**Format overview**: WARC is a sequential record format. Each record begins with `WARC/1.0\r\n` followed by named headers (key: value, similar to HTTP headers), a blank line, and then the record payload. Headers include `WARC-Type` (warcinfo, request, response, resource, etc.), `Content-Length`, `WARC-Record-ID` (UUID-based URI), and `WARC-Date`. Records are separated by `\r\n\r\n`. The format is explicitly designed for **sequential writing and reading** — web crawlers append records as pages are fetched.
+
+**Sequential-write streaming**: ✅ Fully supported — no patching needed. Each record is self-contained (headers + content-length + payload). Records are appended sequentially. No global index or size fields.
+
+**Sequential-read streaming**: ✅ Fully supported. Records can be read in a single forward pass.
+
+**Chunk interleaving (implementations)**: ❌ None known. WARC records are complete, self-contained units (an entire HTTP response or resource). There is no mechanism to split a resource across multiple records and interleave them.
+
+**Chunk interleaving (theoretical)**: ❌ Not in spec. Each WARC record encapsulates a complete resource. The `WARC-Segment-Number` header supports segmentation of very large resources, but segments must appear in order and cannot be interleaved with other records.
+
+**Conclusion for multi-stream use**: WARC is an interesting **non-multimedia general-purpose** sequential format with ISO standardization. Its HTTP-like header syntax is human-readable and extensible. However, it's fundamentally sequential (like TAR/CPIO) with no interleaving, making it unsuitable for concurrent multi-stream multiplexing.
+
+---
+
+#### XAR (eXtensible ARchive)
+
+**Popularity**: ★★☆☆☆ — created by Apple in 2007 for macOS `.pkg` installer packages. Used internally by Xcode and macOS installer infrastructure. Rare outside the Apple ecosystem.
+
+**Format overview**: XAR has a simple three-part structure: a **header** (magic + size + TOC length + TOC checksum info), an **XML table of contents** (full file listing with names, sizes, checksums, compression types, and **byte offsets/lengths into the heap**), and a **heap** (concatenated, optionally compressed file data). The XML TOC is complete and self-contained — it maps every file to an exact (offset, length) pair in the heap.
+
+**Sequential-write streaming**: ❌ Not supported. The XML TOC must be written before the heap, but it contains byte offsets and lengths for heap data that hasn't been written yet. This requires either pre-computation of all compressed sizes or buffering all data, then writing TOC + heap.
+
+**Sequential-read streaming**: ❌ Not supported as a stream. However, once the TOC is parsed, heap data can be read in one forward pass (entries are typically stored in the same order as listed in the TOC).
+
+**Chunk interleaving (implementations)**: ❌ None known.
+
+**Chunk interleaving (theoretical)**: ❌ Not in spec. The heap is a flat concatenation of file data; the TOC indexes into it by offset.
+
+**Conclusion for multi-stream use**: XAR's design (complete TOC upfront referencing a flat heap) is the opposite of streaming. Not suitable for pipe use.
+
+---
+
+#### NUT (NUT Open Container Format)
+
+**Popularity**: ★☆☆☆☆ — designed by FFmpeg/MPlayer developers in 2003 as a "better" multimedia container that fixes limitations of AVI, MP4, and Matroska. Supported by FFmpeg but never achieved significant adoption. Occasionally used for intermediate processing in FFmpeg pipelines.
+
+**Format overview**: NUT uses a frame-based structure with **startcodes** (8-byte sync patterns) for error recovery. The main header describes streams (number, type, codec, timebase). Frames have a header with stream ID, PTS, size, and flags. NUT was specifically designed for **streaming** — headers can be repeated periodically for mid-stream joining (like MPEG-TS), frames are self-delimiting, and the format supports both forward-only reading and error recovery via startcode scanning.
+
+**Sequential-write streaming**: ✅ Fully supported — no patching needed. Frames are written sequentially with per-frame headers. Main headers can be repeated for join-in-progress support.
+
+**Sequential-read streaming**: ✅ Fully supported. Frames can be demultiplexed in a single forward pass. Startcodes enable resynchronization after errors.
+
+**Chunk interleaving (implementations)**: ✅ Yes — native to the format. `ffmpeg -f nut` produces interleaved output with audio and video frames multiplexed by timestamp.
+
+**Chunk interleaving (theoretical)**: ✅ Fully specified. The frame header contains a stream ID; frames from different streams are interleaved by design.
+
+**Conclusion for multi-stream use**: NUT was purpose-built to be a clean streaming-capable interleaved container. It has the right technical properties (streaming, interleaving, error recovery, per-stream identifiers). However, it has negligible adoption outside FFmpeg, no independent implementations, and is entirely multimedia-focused.
+
+---
+
+#### Avro Object Container File (Apache Avro)
+
+**Popularity**: ★★★☆☆ — widely used in the Apache Hadoop/Kafka ecosystem for data serialization and storage. Avro is the default serialization format for Apache Kafka and is supported by Spark, Flink, and most big-data tools.
+
+**Format overview**: An Avro Object Container File (OCF) starts with a **file header** containing magic bytes, metadata (including the JSON schema for all records), and a 16-byte random sync marker. The file then contains a sequence of **data blocks**: each block has a count of records, the serialized size in bytes, the compressed record data, and the sync marker for error recovery. The sync marker enables splitting/joining files at block boundaries.
+
+**Sequential-write streaming**: ✅ Fully supported — no patching needed. Blocks are written sequentially; each block is self-contained (count + size + data + sync marker). New blocks are appended as records become available.
+
+**Sequential-read streaming**: ✅ Fully supported. Blocks can be read and decompressed in order.
+
+**Chunk interleaving (implementations)**: ❌ None known. An Avro OCF contains records conforming to a **single schema**. There is no mechanism for multiple concurrent schemas or streams within one file.
+
+**Chunk interleaving (theoretical)**: ❌ Not in spec. The single-schema design is fundamental — an Avro OCF represents a table (homogeneous rows), not a multiplexed stream of heterogeneous data.
+
+**Conclusion for multi-stream use**: Avro OCF is a well-designed streaming format for homogeneous data (all records share one schema). Not suitable for multi-stream multiplexing of heterogeneous data. Interesting as prior art for block-based streaming with sync markers.
+
+---
+
+#### Protocol Buffers (Delimited / Length-Prefixed Messages)
+
+**Popularity**: ★★★★☆ — Google's Protocol Buffers (protobuf) is one of the most widely used serialization formats. The "delimited" convention (length-prefixed messages in a stream) is used by gRPC, Google internal systems, and many open-source tools. Not a formal container specification — the delimited framing is a convention, not part of the protobuf spec itself.
+
+**Format overview**: A delimited protobuf stream consists of messages prefixed by their serialized size as a varint (variable-length integer encoding). Each message is an independent protobuf-encoded unit. This convention is used by Java's `writeDelimitedTo()`/`parseDelimitedFrom()`, gRPC's wire format (5-byte header: 1-byte compressed flag + 4-byte big-endian length), and many ad-hoc implementations.
+
+**Sequential-write streaming**: ✅ Fully supported — no patching needed. Each message is length-prefixed and self-contained.
+
+**Sequential-read streaming**: ✅ Fully supported. Read varint length, read that many bytes, decode message, repeat.
+
+**Chunk interleaving (implementations)**: ❌ None known as a standard. gRPC carries a single message type per stream. Interleaving would require an envelope message with a stream ID field.
+
+**Chunk interleaving (theoretical)**: ⚠️ Possible with an envelope. A protobuf message could contain a `stream_id` field and an `oneof` payload, but this is application-level design, not part of any protobuf standard.
+
+**Conclusion for multi-stream use**: Protobuf delimited messages are an excellent minimal framing mechanism (varint length prefix + payload) with massive ecosystem support. Multi-stream multiplexing would require a custom envelope message — essentially reinventing LTV framing on top of protobuf. More practical as a serialization layer *within* a multiplexing container than as the container itself.
+
+---
+
+#### QUIC (RFC 9000)
+
+**Popularity**: ★★★★☆ — QUIC is a modern transport protocol standardized in 2021 (RFC 9000), used by HTTP/3 (RFC 9114). Deployed by Google, Cloudflare, Facebook/Meta, and Akamai. Carries ~30% of global web traffic as of 2024.
+
+**Format overview**: QUIC is a multiplexed, encrypted transport protocol over UDP. It provides **multiple independent streams** within a single connection, each identified by a 62-bit stream ID. Streams are fully independent — no head-of-line blocking between streams (unlike HTTP/2 over TCP). Data is carried in STREAM frames with stream ID, offset, length, and a FIN bit for stream termination. QUIC also supports unidirectional and bidirectional streams, and DATAGRAM frames (RFC 9221) for unreliable delivery.
+
+**Sequential-write streaming**: ✅ Fully supported — each STREAM frame is self-contained with stream ID + offset + data.
+
+**Sequential-read streaming**: ✅ Fully supported per stream.
+
+**Chunk interleaving (implementations)**: ✅ Native multiplexing. All QUIC implementations (`quiche`, `quinn`, `ngtcp2`, Chromium, `s2n-quic`) multiplex streams at the frame level.
+
+**Chunk interleaving (theoretical)**: ✅ Core design feature — RFC 9000 §2 defines streams as the fundamental multiplexing unit.
+
+**Conclusion for multi-stream use**: QUIC is the state-of-the-art in transport-layer multiplexing: independent streams, no HOL blocking, built-in encryption, per-stream FIN. However, it is a **transport protocol**, not a container format — it requires a QUIC stack (TLS 1.3, congestion control, packet loss recovery), runs over UDP, and is designed for network communication, not local pipe multiplexing. Like HTTP/2 and SSH, it's excellent prior art but impractical for `cmd1 | cmd2` use.
+
+---
+
+#### LHA / LZH
+
+**Popularity**: ★★☆☆☆ — created in 1988 by Haruyasu Yoshizaki. Was extremely popular in Japan and the Amiga community through the 1990s. Used for Japanese software distribution and the Aminet archive. Rare today outside retro computing; some use persists in embedded systems and Japanese legacy software.
+
+**Format overview**: LHA is a header-per-file archive format. Each file entry has a variable-length header containing the filename, compressed/original sizes, timestamps, CRC-16, and compression method identifier, immediately followed by the compressed file data. No central directory or global index — the archive is a pure sequential concatenation of header+data pairs, terminated by a header with size 0.
+
+**Sequential-write streaming**: ✅ Fully supported — no patching needed. Each header contains the compressed size, written after compression completes for that file. No global index or back-references.
+
+**Sequential-read streaming**: ✅ Fully supported. Files can be extracted in a single forward pass.
+
+**Chunk interleaving (implementations)**: ❌ None known.
+
+**Chunk interleaving (theoretical)**: ❌ Not in spec. Like TAR/CPIO, each file must be written completely before the next begins.
+
+**Conclusion for multi-stream use**: LHA is another sequential archive format in the TAR/CPIO family — good for streaming but without interleaving.
+
+---
+
 #### Custom / Generic Framing Formats
 
 When no existing format is suitable, a lightweight framing protocol can be designed. Several well-known examples exist:
@@ -507,6 +716,17 @@ Without tombstones, a reader that simply hits EOF cannot distinguish "the writer
 | **SSH channels** | SSH_MSG_CHANNEL_CLOSE per channel + SSH_MSG_DISCONNECT | ✅ Yes — missing close = unclean disconnect | ✅ Yes — CHANNEL_CLOSE per channel |
 | **HTTP/1.1 chunked** | Zero-length chunk (`0\r\n\r\n`) + optional trailers | ✅ Yes — missing zero-chunk = truncated | ❌ N/A (single-stream) |
 | **MIME multipart** | Closing boundary (`--boundary--`) | ✅ Yes — missing close boundary = truncated | ❌ Parts are sequential |
+| **MP4/ISOBMFF** | None standard (moov/mfra optional) | ⚠️ Regular MP4 truncation detectable by incomplete moov; fMP4 has no mandatory end | ⚠️ No per-track end signal |
+| **AVI/RIFF** | None (implicit EOF; RIFF size field) | ⚠️ RIFF header size mismatch = truncated; but optional idx1 absence is ambiguous | ❌ No per-stream end signal |
+| **IFF** | None (implicit EOF; FORM size field) | ⚠️ FORM size mismatch = truncated | ❌ N/A |
+| **FLV** | None (implicit EOF) | ⚠️ Incomplete last tag detectable (PreviousTagSize mismatch) | ❌ No per-stream end signal |
+| **WARC** | None (implicit EOF) | ⚠️ Incomplete last record detectable (Content-Length mismatch) | ❌ N/A (single-stream) |
+| **XAR** | None (TOC is upfront; heap length implied) | ⚠️ TOC-declared sizes vs actual heap = detectable | ❌ N/A |
+| **NUT** | EOR (End of Relevance) frame per stream | ✅ Yes — missing EOR = truncated | ✅ Yes — per stream ID |
+| **Avro OCF** | None (implicit EOF; sync markers per block) | ⚠️ Incomplete block (missing sync marker) = truncated | ❌ N/A (single-schema) |
+| **Protobuf delimited** | None (implicit EOF) | ⚠️ Incomplete varint or short payload = truncated | ❌ N/A (convention-dependent) |
+| **QUIC** | FIN bit per stream + CONNECTION_CLOSE | ✅ Yes — missing FIN = incomplete stream | ✅ Yes — FIN bit per stream ID |
+| **LHA/LZH** | Zero-size header sentinel | ✅ Yes — missing sentinel = truncated | ❌ N/A (single-stream) |
 | **Custom LTV** | Depends on design — typically a zero-length sentinel or explicit END frame | Designer's choice — **should** include an end marker | Designer's choice |
 
 ¹ In `ar`, the reader knows each member's size from its header, so truncation *within* a member is detectable (fewer bytes than declared). But truncation *between* members is indistinguishable from a valid archive with fewer members.
@@ -515,7 +735,7 @@ Without tombstones, a reader that simply hits EOF cannot distinguish "the writer
 
 ### Best-in-class: formats with per-stream tombstones
 
-For multi-stream pipe use, the most important property is **per-stream finalization** — the reader must know when each individual logical stream is complete, not just the overall container. Only three formats provide this natively:
+For multi-stream pipe use, the most important property is **per-stream finalization** — the reader must know when each individual logical stream is complete, not just the overall container. Five formats provide this natively:
 
 1. **Ogg** — each logical bitstream has an explicit **EOS (End of Stream) flag** in the last page's header for that stream. A reader can detect per-stream completion and distinguish it from truncation. The Ogg page CRC-32 also provides integrity checking for each page.
 
@@ -523,11 +743,15 @@ For multi-stream pipe use, the most important property is **per-stream finalizat
 
 3. **SSH channels** — **SSH_MSG_CHANNEL_CLOSE** explicitly terminates each channel. **SSH_MSG_DISCONNECT** terminates the connection.
 
+4. **NUT** — provides an **EOR (End of Relevance)** frame per stream, explicitly marking when a stream has no more data. Combined with startcode-based sync, this enables clean per-stream finalization.
+
+5. **QUIC** — the **FIN bit** on STREAM frames explicitly marks the end of each stream. **CONNECTION_CLOSE** terminates the entire connection. Per-stream finalization is a core protocol feature.
+
 Formats like TAR (two zero blocks), CPIO (`TRAILER!!!`), and HTTP/1.1 chunked (zero-length chunk) have *container-level* end markers but no per-stream finalization — because they don't support multiple concurrent streams.
 
 ### Implication for format choice
 
-Any format chosen for multi-stream piping **must** provide per-stream tombstones. This rules out MPEG-TS (no end markers at all) for use cases where clean termination detection matters. It reinforces **Ogg** (EOS flag) and **HTTP/2 framing** (END_STREAM) as the strongest candidates. A custom LTV format **should** include an explicit end-of-stream frame type (e.g., a zero-length payload with a special tag, or a dedicated END frame type).
+Any format chosen for multi-stream piping **must** provide per-stream tombstones. This rules out MPEG-TS and FLV (no per-stream end markers) for use cases where clean termination detection matters. It reinforces **Ogg** (EOS flag), **HTTP/2 framing** (END_STREAM), **QUIC** (FIN bit), and **NUT** (EOR frame) as the strongest candidates. A custom LTV format **should** include an explicit end-of-stream frame type (e.g., a zero-length payload with a special tag, or a dedicated END frame type).
 
 ---
 
@@ -643,9 +867,13 @@ The strongest requirement is a format that is **not multimedia-specific** — on
 |---|---|---|---|---|---|
 | 1 | **Ogg** | 2003 | ★★★☆☆ | ✅ By spec (RFC 3533) | Spec says "general-purpose bitstream encapsulation" — but **all existing tooling is multimedia-only** (`7z x file.ogg` won't work; no archive utility recognizes it) |
 | 2 | **HTTP/2 framing** | 2015 | ★★★★★ | ✅ By design | Stream multiplexer for arbitrary data; but carries protocol complexity beyond just framing |
-| 3 | **HTTP/1.1 chunked** | 1997 | ★★★★★ | ✅ By design | Excellent single-stream framing; chunk extensions allow stream tagging in theory but no implementations exist |
-| 4 | **SSH channels** | 1995 | ★★★★★ | ✅ By design | Proven channel multiplexing; but encryption/key-exchange overhead is unnecessary for local pipes |
-| 5 | **Custom LTV** | — | N/A | ✅ By definition | Zero legacy baggage; trivial to implement; but no established standard/tooling |
+| 3 | **QUIC** | 2021 | ★★★★☆ | ✅ By design | State-of-the-art multiplexing (independent streams, FIN per stream); but requires full transport stack (TLS, congestion control, UDP) |
+| 4 | **HTTP/1.1 chunked** | 1997 | ★★★★★ | ✅ By design | Excellent single-stream framing; chunk extensions allow stream tagging in theory but no implementations exist |
+| 5 | **SSH channels** | 1995 | ★★★★★ | ✅ By design | Proven channel multiplexing; but encryption/key-exchange overhead is unnecessary for local pipes |
+| 6 | **Protobuf delimited** | 2008 | ★★★★☆ | ✅ By design | Widely deployed length-prefixed framing; but multi-stream requires custom envelope design |
+| 7 | **WARC** | 2009 | ★★★☆☆ | ✅ By spec (ISO 28500) | Non-multimedia, ISO-standardized, streaming-capable; but sequential (no interleaving) |
+| 8 | **Avro OCF** | 2009 | ★★★☆☆ | ✅ Data-oriented | Streaming with sync markers; but single-schema per file (no heterogeneous streams) |
+| 9 | **Custom LTV** | — | N/A | ✅ By definition | Zero legacy baggage; trivial to implement; but no established standard/tooling |
 
 **Ogg** (RFC 3533, 2003) is the **best general-purpose candidate among established formats by specification**. Despite its reputation as "the Vorbis/Opus container," RFC 3533 is explicitly a general-purpose bitstream encapsulation format — it defines pages, stream serial numbers, and granule positions with no multimedia-specific semantics. An Ogg stream carrying arbitrary tagged data chunks is fully spec-compliant. It has IETF standardization, clean implementations (`libogg` in C, crates in Rust, packages in Python/Go), and ~0.5–1% framing overhead with CRC-32 integrity.
 
@@ -655,7 +883,11 @@ The strongest requirement is a format that is **not multimedia-specific** — on
 
 **SSH channels** (RFC 4254, since ~1995) are the oldest general-purpose multiplexing mechanism still in universal production use. However, the encryption and connection-setup overhead makes it impractical for local pipe multiplexing.
 
-**HTTP/1.1 chunked encoding** (RFC 7230, 1997) deserves special mention as the most universally deployed streaming framing format. Its chunked transfer encoding solves the single-stream "unknown length" problem perfectly, and chunk extensions (§4.1.1) could theoretically carry stream IDs for multiplexing. However, no implementation uses chunk extensions this way, and the HTTP/1.1 ecosystem (proxies, CDNs, clients) would silently flatten multiplexed chunks into a single concatenated stream. MIME `multipart/mixed` adds multi-part capability but parts are sequential, not interleaved — this fundamental limitation is precisely why HTTP/2 was created. HTTP/1.1 chunked encoding is excellent **prior art for single-stream framing design** but does not solve the interleaving problem.
+**QUIC** (RFC 9000, 2021) is the most advanced multiplexing transport protocol, fixing HTTP/2's head-of-line blocking problem with independent streams. Its STREAM frames with 62-bit stream IDs and FIN bits are the cleanest modern multiplexing primitive. However, QUIC is a **full transport protocol** — it requires TLS 1.3 encryption, congestion control, packet loss recovery, and runs over UDP. Using QUIC for local pipe multiplexing would be like using SSH channels: technically correct but absurdly over-engineered.
+
+**Protobuf delimited messages** deserve mention as one of the most widely deployed length-prefixed framing conventions. The varint-length + message pattern is used by gRPC, Google internal systems, and countless applications. However, multi-stream multiplexing requires a custom envelope message — protobuf is a serialization format, not a multiplexing container.
+
+**WARC** (ISO 28500, 2009) and **Avro OCF** (Apache, 2009) are notable as **non-multimedia** streaming formats with real adoption. WARC is used for web archiving (Internet Archive, Common Crawl) and Avro for big-data pipelines (Kafka, Hadoop). Both support streaming write (no patching) but are fundamentally **sequential** — WARC records and Avro blocks contain homogeneous data with no interleaving mechanism. They confirm that the data engineering and archiving communities have the same streaming needs, but neither format solves the interleaving problem.
 
 ### Multimedia formats that also qualify
 
@@ -664,8 +896,11 @@ Among formats that support both streaming and interleaving but are multimedia-or
 | Rank | Format | Year | Popularity | All criteria met? |
 |---|---|---|---|---|
 | 1 | **MPEG-TS** | 1995 | ★★★★☆ | ✅ Yes — no patching, native interleaving, massive tooling |
-| 2 | **MPEG-PS** | 1993 | ★★★☆☆ | ✅ Yes — but declining adoption |
-| 3 | **Matroska** | 2002 | ★★★★☆ | ⚠️ Conditional — needs SeekHead omitted for no-patch write |
+| 2 | **NUT** | 2003 | ★☆☆☆☆ | ✅ Yes — streaming, interleaving, per-stream EOR tombstones; but negligible adoption |
+| 3 | **FLV** | 2002 | ★★★☆☆ | ✅ Yes — streaming, interleaving; but deprecated (Flash EOL), single stream ID only |
+| 4 | **MPEG-PS** | 1993 | ★★★☆☆ | ✅ Yes — but declining adoption |
+| 5 | **MP4/fMP4** | 2001 | ★★★★★ | ⚠️ Fragmented MP4 only — regular MP4 requires patching; complex box structure |
+| 6 | **Matroska** | 2002 | ★★★★☆ | ⚠️ Conditional — needs SeekHead omitted for no-patch write |
 
 These are proven and well-tooled but carry multimedia-specific framing (PIDs, PAT/PMT, PES headers, track entries) that adds unnecessary conceptual and byte overhead for general-purpose data multiplexing.
 
@@ -681,22 +916,31 @@ Evaluated on streaming (no patching), interleaving, general-purpose suitability,
 
 4. **HTTP/2 framing (inspiration)** — the 9-byte frame header design with **END_STREAM flag** and **GOAWAY** connection shutdown is worth studying as prior art for any new "mux" format, even if using the full HTTP/2 spec is overkill.
 
+5. **QUIC (inspiration)** — the state-of-the-art in multiplexed transport (RFC 9000). Per-stream FIN bit, independent streams without HOL blocking, and 62-bit stream IDs represent the gold standard for multiplexing design. Like HTTP/2, useful as prior art rather than direct reuse.
+
 ### Non-starters for multi-stream use
 
-- **TAR, CPIO, ar** — sequential, no interleaving.
+- **TAR, CPIO, ar, LHA/LZH, WARC** — sequential, no interleaving.
 - **ZIP** — Central Directory at end breaks streaming read.
 - **7-Zip** — headers at end, no streaming.
 - **RAR** — proprietary, no interleaving.
 - **ISO 9660** — a filesystem, not an archive stream; requires pre-computed sector layout.
 - **WIM** — deployment image format; must patch header with resource table offset.
 - **CAB** — Windows installer archive; header requires pre-computed offsets and counts.
+- **XAR** — XML TOC at beginning references heap by offset; requires pre-computation.
 - **HTTP/1.1 chunked** — excellent single-stream streaming; but no native multiplexing (chunk extensions hack is theoretical only).
+- **AVI/RIFF** — native interleaving, but RIFF header requires total size (patching); multimedia-specific.
+- **IFF** — historically important (1985, first general-purpose TLV container), but chunk sizes needed upfront.
 - **ASF** — Microsoft proprietary, needs file-size in header.
 - **CAF** — Apple-only, audio-specific.
+- **Avro OCF** — streaming-capable, but single-schema per file (no heterogeneous multi-stream).
+- **Protobuf delimited** — excellent framing primitive, but multi-stream requires custom envelope (not a standard).
+- **MP4 (regular)** — moov atom requires pre-computation or patching (fMP4 streams but is complex).
+- **FLV** — streaming and interleaving, but deprecated (Flash EOL 2020), single stream ID field unused.
 
 ### Open questions / TBD
 
-- TBD: Feasibility of a new minimal open spec designed specifically for general-purpose multi-stream CLI piping (working name: "mux"). HTTP/2's 9-byte frame header, Ogg's page structure, and HTTP/1.1's chunked encoding (hex-length + extensions) are the strongest prior art to draw from.
+- TBD: Feasibility of a new minimal open spec designed specifically for general-purpose multi-stream CLI piping (working name: "mux"). HTTP/2's 9-byte frame header, QUIC's per-stream FIN bit, Ogg's page structure, NUT's startcode sync, and HTTP/1.1's chunked encoding (hex-length + extensions) are the strongest prior art to draw from.
 
 ---
 
@@ -712,6 +956,11 @@ A practical concern when choosing a multi-stream container for CLI pipes is **fr
 | **HTTP/2 framing** | 9 bytes | Up to 16,384 bytes (default) | ~0.05% at max frame | Well-defined; stream ID native; but designed for TCP, not pipes |
 | **HTTP/1.1 chunked** | ~15–22 bytes (hex-len + `;stream=N` + CRLFs) | Variable (any size) | ~0.03% at 64 KiB chunks | Stream tagging via chunk extensions adds ~10 bytes; universally parseable |
 | **Netstring** | ~5–10 bytes (`len:...,`) | Variable | < 0.01% at large sizes | ASCII length prefix; simple but no stream ID built in |
+| **FLV** | 11 bytes (type + size + timestamp + stream_id) + 4 PreviousTagSize | Variable | ~0.02% at 64 KiB tags | Simple tag structure; PreviousTagSize adds 4 bytes per tag |
+| **Protobuf delimited** | 1–10 bytes (varint length prefix) | Variable | < 0.01% at large messages | Minimal; varint encoding; no stream ID built in |
+| **QUIC STREAM frame** | 1–17 bytes (type + stream_id + offset + length) | Variable | < 0.03% at 64 KiB frames | Variable-length integer encoding; stream ID native |
+| **NUT** | 1–13 bytes (startcode + stream_id + pts + size) | Variable | ~0.02% at 64 KiB frames | Variable-length coding; startcodes for sync recovery |
+| **MP4/fMP4** | ~100+ bytes (moof box per fragment) | Variable | ~0.1–0.5% | Box structure adds significant per-fragment overhead; includes track/sample metadata |
 
 **Key takeaway**: Custom LTV framing has the lowest overhead for high-throughput CLI pipes. Ogg and MPEG-TS add meaningful overhead but provide checksums (Ogg) or sync recovery (MPEG-TS) which matter for unreliable channels. For reliable UNIX pipes, the extra error-resilience features are less valuable, making LTV or Ogg the pragmatic choices.
 
