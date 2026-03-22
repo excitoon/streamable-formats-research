@@ -60,7 +60,7 @@ Evaluate existing archive and container formats against the following criteria:
 | SSH channels | 1995 | ★★★★★ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec (RFC 4254) |
 | HTTP/1.1 chunked | 1997 | ★★★★★ | ✅ Yes | ✅ Yes | ❌ None known | ⚠️ Possible via chunk extensions (RFC 7230 §4.1.1) |
 | MIME multipart | 1996 | ★★★★★ | ✅ Yes | ✅ Yes | ❌ None known | ❌ Parts are sequential, not interleaved |
-| ISO 9660 | 1988 | ★★★★☆ | ❌ No (volume descriptors reference path table/root dir offsets) | ❌ No (random-access by design) | ❌ None known | ❌ Not in spec |
+| ISO 9660 | 1988 | ★★★★☆ | ❌ No (requires pre-computed sector layout) | ❌ No (random-access by design) | ❌ None known | ❌ Not in spec |
 | WIM | 2006 | ★★★☆☆ | ❌ No (must patch header with resource table offset) | ❌ No | ❌ None known | ❌ Not in spec |
 | CAB | 1997 | ★★★☆☆ | ❌ No (header contains folder/file counts and offsets) | ⚠️ Partial (forward scan possible) | ❌ None known | ❌ Not in spec |
 | Framing (custom) | — | N/A | ✅ Yes | ✅ Yes | ✅ By design | ✅ By design |
@@ -395,7 +395,7 @@ HTTP/1.1 chunked encoding is valuable **as prior art for framing design** (hex-l
 
 **Format overview**: ISO 9660 is a **read-only filesystem**, not an archive format. It stores a volume descriptor set at fixed sectors near the beginning (sectors 16–N), followed by path tables and directory records that reference files by absolute sector offsets. Extensions include Rock Ridge (POSIX attributes), Joliet (Unicode names), and El Torito (bootable images). The format is designed for random access on optical media, with directory records containing sector offsets and lengths for all files.
 
-**Sequential-write streaming**: ❌ Not supported — **requires patching / pre-computation**. The volume descriptors (at sector 16+) contain the root directory record's sector offset and the path table location. Directory records contain sector offsets for all files. A writer must know the layout of the entire filesystem before writing the volume descriptors. Tools like `mkisofs`/`genisoimage` compute the complete layout in memory, then write everything in one pass — but this requires holding the full directory tree in memory and knowing all file sizes upfront. The format cannot be incrementally written as files are produced.
+**Sequential-write streaming**: ❌ Not supported — **requires pre-computation**. The volume descriptors (at sector 16+) contain the root directory record's sector offset and the path table location. Directory records contain sector offsets for all files. A writer must therefore know the layout of the entire filesystem before writing the volume descriptors. Tools like `mkisofs`/`genisoimage` compute the complete layout in memory and then write everything in one pass, but this requires holding the full directory tree in memory and knowing all file sizes upfront. The format cannot be incrementally written as files are produced.
 
 **Sequential-read streaming**: ❌ Not practical. ISO 9660 is designed for random-access seek-based reading. While it's technically possible to scan sectors forward, the format assumes readers will jump to specific sectors via offsets in directory records.
 
@@ -665,7 +665,7 @@ These are proven and well-tooled but carry multimedia-specific framing (PIDs, PA
 
 ### Best candidates for a multi-stream streaming pipe format
 
-Evaluated on all four axes: streaming (no patching), interleaving, general-purpose, and **stream finalization (tombstones)** — the ability to distinguish clean completion from truncation on a per-stream basis.
+Evaluated on streaming (no patching), interleaving, general-purpose suitability, and **stream finalization (tombstones)** — the ability to distinguish clean completion from truncation on a per-stream basis.
 
 1. **Ogg** — the best fit for general-purpose use. IETF standard (RFC 3533), explicitly general-purpose by spec, clean page-based multiplexing with CRC integrity, ~0.5–1% overhead. **Per-stream EOS flag** provides clean tombstones. Requires wrapping `libogg` or writing a simple page emitter (~200 lines of C).
 
