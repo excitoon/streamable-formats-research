@@ -60,6 +60,9 @@ Evaluate existing archive and container formats against the following criteria:
 | SSH channels | 1995 | ★★★★★ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec (RFC 4254) |
 | HTTP/1.1 chunked | 1997 | ★★★★★ | ✅ Yes | ✅ Yes | ❌ None known | ⚠️ Possible via chunk extensions (RFC 7230 §4.1.1) |
 | MIME multipart | 1996 | ★★★★★ | ✅ Yes | ✅ Yes | ❌ None known | ❌ Parts are sequential, not interleaved |
+| ISO 9660 | 1988 | ★★★★☆ | ❌ No (volume descriptors reference path table/root dir offsets) | ❌ No (random-access by design) | ❌ None known | ❌ Not in spec |
+| WIM | 2006 | ★★★☆☆ | ❌ No (must patch header with resource table offset) | ❌ No | ❌ None known | ❌ Not in spec |
+| CAB | 1997 | ★★★☆☆ | ❌ No (header contains folder/file counts and offsets) | ⚠️ Partial (forward scan possible) | ❌ None known | ❌ Not in spec |
 | Framing (custom) | — | N/A | ✅ Yes | ✅ Yes | ✅ By design | ✅ By design |
 
 ---
@@ -386,6 +389,60 @@ HTTP/1.1 chunked encoding is valuable **as prior art for framing design** (hex-l
 
 ---
 
+#### ISO 9660 (CD-ROM / Optical Disc Image)
+
+**Popularity**: ★★★★☆ — the universal filesystem format for CD-ROMs, also widely used for disc images (`.iso`). Supported by every operating system.
+
+**Format overview**: ISO 9660 is a **read-only filesystem**, not an archive format. It stores a volume descriptor set at fixed sectors near the beginning (sectors 16–N), followed by path tables and directory records that reference files by absolute sector offsets. Extensions include Rock Ridge (POSIX attributes), Joliet (Unicode names), and El Torito (bootable images). The format is designed for random access on optical media, with directory records containing sector offsets and lengths for all files.
+
+**Sequential-write streaming**: ❌ Not supported — **requires patching / pre-computation**. The volume descriptors (at sector 16+) contain the root directory record's sector offset and the path table location. Directory records contain sector offsets for all files. A writer must know the layout of the entire filesystem before writing the volume descriptors. Tools like `mkisofs`/`genisoimage` compute the complete layout in memory, then write everything in one pass — but this requires holding the full directory tree in memory and knowing all file sizes upfront. The format cannot be incrementally written as files are produced.
+
+**Sequential-read streaming**: ❌ Not practical. ISO 9660 is designed for random-access seek-based reading. While it's technically possible to scan sectors forward, the format assumes readers will jump to specific sectors via offsets in directory records.
+
+**Chunk interleaving (implementations)**: ❌ None. ISO 9660 stores each file as a contiguous extent of sectors.
+
+**Chunk interleaving (theoretical)**: ❌ Not in spec. ISO 9660 §6.6.1 defines an "interleave" mode for files (interleave gap size + interleave unit size fields in directory records), but this is for spreading a single file across non-contiguous sectors on optical media for performance reasons — not for multiplexing different files/streams.
+
+**Conclusion for multi-stream use**: ISO 9660 is a filesystem, not a streaming format. Entirely unsuitable for pipe-based multi-stream use.
+
+---
+
+#### WIM (Windows Imaging Format)
+
+**Popularity**: ★★★☆☆ — Microsoft's format for Windows deployment images. Used by DISM, ImageX, and the Windows installer for OS images. Not commonly used outside Windows deployment.
+
+**Format overview**: WIM is a **file-based capture format** designed to store complete filesystem snapshots. A WIM file has a header at offset 0, followed by resource data (optionally compressed and deduplicated), and a metadata/integrity table at the end. The header contains a resource table offset and size, XML metadata offset, and optional integrity table offset — all of which point to structures at the end of the file.
+
+**Sequential-write streaming**: ❌ Not supported — **requires patching**. The WIM header at offset 0 must be updated with the resource table offset and size after all resource data has been written. Microsoft's `wimlib` (`wimcapture`) writes resources first, then appends the lookup table, XML data, and integrity table, and finally seeks back to patch the header. This is a fundamental design requirement, not an implementation choice.
+
+**Sequential-read streaming**: ❌ Not practical. Readers need the resource table (at end-of-file offset from the header) to locate individual files.
+
+**Chunk interleaving (implementations)**: ❌ None known. Resources are stored sequentially.
+
+**Chunk interleaving (theoretical)**: ❌ Not in spec.
+
+**Conclusion for multi-stream use**: WIM is a deployment-image format requiring seek access. Not suitable for streaming or interleaving.
+
+---
+
+#### CAB (Microsoft Cabinet)
+
+**Popularity**: ★★★☆☆ — Microsoft's standard archive format for software distribution (Windows installers, `.msi`, driver packages, Windows Update). Common on Windows, rare elsewhere.
+
+**Format overview**: A CAB file starts with a **CFHEADER** structure containing the total cabinet size, file count, folder count, and an offset to the first `CFFILE` entry. This is followed by `CFFOLDER` structures (each describing a compression method and offset to compressed data), then `CFFILE` structures (describing files within folders), then the compressed data blocks. Multi-cabinet spanning is supported (prev/next cabinet references in the header).
+
+**Sequential-write streaming**: ❌ Not supported — **requires patching or pre-computation**. The cabinet header contains the total cabinet size and the offset to the first `CFFILE` entry, both of which are unknown until all data has been compressed. Microsoft's `makecab` and `libmspack` compute the layout before writing. While the data blocks themselves could theoretically be streamed, the header references fixed offsets that must be written first.
+
+**Sequential-read streaming**: ⚠️ Partially possible. A reader could scan forward through the structures if the header is present, since the header points to the first CFFILE entry and data follows in order. However, the header must be complete before reading begins, so this is not true streaming in the pipe sense.
+
+**Chunk interleaving (implementations)**: ❌ None known. Files within a folder share a single compressed data stream; different folders are sequential.
+
+**Chunk interleaving (theoretical)**: ❌ Not in spec. CAB's "folder" concept groups files into a single compressed stream, which is the opposite of interleaving — it merges multiple files into one stream for better compression.
+
+**Conclusion for multi-stream use**: CAB is a Windows-specific installation archive that requires pre-computed headers. Not suitable for streaming or interleaving.
+
+---
+
 #### Custom / Generic Framing Formats
 
 When no existing format is suitable, a lightweight framing protocol can be designed. Several well-known examples exist:
@@ -407,6 +464,66 @@ A custom LTV-style framing is the simplest possible approach:
 [4-byte stream_id][4-byte payload_len][payload_len bytes of payload]
 ```
 This allows a reader to demultiplex any number of streams in a single forward pass with O(1) memory overhead.
+
+---
+
+## Stream Finalization / Tombstone Markers
+
+A critical requirement for any multi-stream pipe format is the ability to **distinguish a properly finalized stream from one that was truncated** (e.g., due to writer crash, `kill -9`, broken pipe, or I/O error). Without an explicit end-of-stream marker ("tombstone"), the reader cannot tell whether the stream ended cleanly or was interrupted mid-data.
+
+### Why this matters
+
+When a multiplexed stream is piped between processes, the reader must be able to detect:
+1. **Clean completion**: all logical streams ended normally, the container is valid.
+2. **Truncation**: the writer died or the pipe broke mid-write — the stream is incomplete.
+3. **Per-stream completion**: in an interleaved multi-stream format, individual logical streams may finish at different times. The reader needs per-stream end markers to know when each sub-stream is complete.
+
+Without tombstones, a reader that simply hits EOF cannot distinguish "the writer finished writing all data" from "the writer crashed after writing 60% of the data." This is especially important in pipelines where errors should propagate cleanly.
+
+### Format-by-format finalization analysis
+
+| Format | End-of-stream marker | Truncation detectable? | Per-stream end marker? |
+|---|---|---|---|
+| **TAR** | Two 512-byte all-zero blocks | ✅ Yes — missing zero blocks = truncated | ❌ N/A (single-stream) |
+| **CPIO** | `TRAILER!!!` filename entry | ✅ Yes — missing trailer = truncated | ❌ N/A (single-stream) |
+| **ar** | None (implicit EOF) | ❌ No — truncation indistinguishable from valid end¹ | ❌ N/A |
+| **ZIP** | End of Central Directory record (EOCD) | ✅ Yes — missing EOCD = truncated | ❌ N/A |
+| **7-Zip** | EndHeader at end | ✅ Yes — missing/invalid EndHeader = truncated | ❌ N/A |
+| **RAR** | End-of-archive block (HEAD_ENDER) | ✅ Yes — missing ENDER = truncated | ❌ N/A |
+| **ISO 9660** | Volume Descriptor Set Terminator | ✅ Yes — but requires valid descriptor set at start | ❌ N/A |
+| **WIM** | Integrity table (optional) + complete header | ⚠️ Header checksum validates; but no explicit end marker | ❌ N/A |
+| **CAB** | Header contains total cabinet size | ✅ Yes — actual size < declared size = truncated | ❌ N/A |
+| **Ogg** | Page with EOS flag (0x04) per stream | ✅ Yes — missing EOS page = truncated | ✅ Yes — EOS flag per serial number |
+| **Matroska/MKV** | None (implicit EOF or Segment size match) | ⚠️ Unknown-size segments have no end marker; CRC in some elements helps | ⚠️ No per-track end signal |
+| **MPEG-TS** | None (continuous stream) | ❌ No² — designed for broadcast; truncation is normal operation | ❌ No per-PID end signal |
+| **MPEG-PS** | MPEG_program_end_code (0x000001B9) | ✅ Yes — missing end code = truncated | ❌ No per-stream end signal |
+| **ASF** | Simple Index Object (optional) + declared packet count | ⚠️ Packet count in header; but streaming mode uses sentinel values | ❌ No per-stream end |
+| **CAF** | None (implicit EOF; chunk sizes guide reading) | ⚠️ If chunk size is -1 (streaming), truncation is ambiguous | ❌ N/A (audio-specific) |
+| **HTTP/2 framing** | GOAWAY frame (connection) + END_STREAM flag (per-stream) | ✅ Yes — missing GOAWAY = unclean disconnect | ✅ Yes — END_STREAM flag per stream ID |
+| **SSH channels** | SSH_MSG_CHANNEL_CLOSE per channel + SSH_MSG_DISCONNECT | ✅ Yes — missing close = unclean disconnect | ✅ Yes — CHANNEL_CLOSE per channel |
+| **HTTP/1.1 chunked** | Zero-length chunk (`0\r\n\r\n`) + optional trailers | ✅ Yes — missing zero-chunk = truncated | ❌ N/A (single-stream) |
+| **MIME multipart** | Closing boundary (`--boundary--`) | ✅ Yes — missing close boundary = truncated | ❌ Parts are sequential |
+| **Custom LTV** | Depends on design — typically a zero-length sentinel or explicit END frame | Designer's choice — **should** include an end marker | Designer's choice |
+
+¹ In `ar`, the reader knows each member's size from its header, so truncation *within* a member is detectable (fewer bytes than declared). But truncation *between* members is indistinguishable from a valid archive with fewer members.
+
+² MPEG-TS is designed for broadcast where the stream may be joined or left at any point. There is no concept of "complete" — this is a feature for broadcast but a problem for pipeline use.
+
+### Best-in-class: formats with per-stream tombstones
+
+For multi-stream pipe use, the most important property is **per-stream finalization** — the reader must know when each individual logical stream is complete, not just the overall container. Only three formats provide this natively:
+
+1. **Ogg** — each logical bitstream has an explicit **EOS (End of Stream) flag** in the last page's header for that stream. A reader can detect per-stream completion and distinguish it from truncation. The Ogg page CRC-32 also provides integrity checking for each page.
+
+2. **HTTP/2 framing** — each stream can be terminated with a frame carrying the **END_STREAM** flag (bit 0). A GOAWAY frame signals connection-level shutdown. Together, these provide both per-stream and connection-level finalization.
+
+3. **SSH channels** — **SSH_MSG_CHANNEL_CLOSE** explicitly terminates each channel. **SSH_MSG_DISCONNECT** terminates the connection.
+
+Formats like TAR (two zero blocks), CPIO (`TRAILER!!!`), and HTTP/1.1 chunked (zero-length chunk) have *container-level* end markers but no per-stream finalization — because they don't support multiple concurrent streams.
+
+### Implication for format choice
+
+Any format chosen for multi-stream piping **must** provide per-stream tombstones. This rules out MPEG-TS (no end markers at all) for use cases where clean termination detection matters. It reinforces **Ogg** (EOS flag) and **HTTP/2 framing** (END_STREAM) as the strongest candidates. A custom LTV format **should** include an explicit end-of-stream frame type (e.g., a zero-length payload with a special tag, or a dedicated END frame type).
 
 ---
 
@@ -548,13 +665,15 @@ These are proven and well-tooled but carry multimedia-specific framing (PIDs, PA
 
 ### Best candidates for a multi-stream streaming pipe format
 
-1. **Ogg** — the best fit for general-purpose use. IETF standard (RFC 3533), explicitly general-purpose by spec, clean page-based multiplexing with CRC integrity, ~0.5–1% overhead. Requires wrapping `libogg` or writing a simple page emitter (~200 lines of C).
+Evaluated on all four axes: streaming (no patching), interleaving, general-purpose, and **stream finalization (tombstones)** — the ability to distinguish clean completion from truncation on a per-stream basis.
 
-2. **Custom LTV framing** — minimal overhead (~0.01%), trivial to implement (8-byte header: stream_id + length), language-agnostic. Best choice when no legacy format compatibility is needed and simplicity is paramount.
+1. **Ogg** — the best fit for general-purpose use. IETF standard (RFC 3533), explicitly general-purpose by spec, clean page-based multiplexing with CRC integrity, ~0.5–1% overhead. **Per-stream EOS flag** provides clean tombstones. Requires wrapping `libogg` or writing a simple page emitter (~200 lines of C).
 
-3. **MPEG-TS** — the most battle-tested streaming format (30 years, digital TV worldwide). Best choice if multimedia tooling integration is desired or error-resilient sync recovery matters.
+2. **Custom LTV framing** — minimal overhead (~0.01%), trivial to implement (8-byte header: stream_id + length), language-agnostic. **Must include an explicit end-of-stream frame type** in the design to provide tombstone functionality. Best choice when no legacy format compatibility is needed and simplicity is paramount.
 
-4. **HTTP/2 framing (inspiration)** — the 9-byte frame header design is worth studying as prior art for any new "mux" format, even if using the full HTTP/2 spec is overkill.
+3. **MPEG-TS** — the most battle-tested streaming format (30 years, digital TV worldwide). Best choice if multimedia tooling integration is desired or error-resilient sync recovery matters. **Lacks per-stream end markers** (by design, for broadcast) — truncation detection requires application-level signaling.
+
+4. **HTTP/2 framing (inspiration)** — the 9-byte frame header design with **END_STREAM flag** and **GOAWAY** connection shutdown is worth studying as prior art for any new "mux" format, even if using the full HTTP/2 spec is overkill.
 
 ### Non-starters for multi-stream use
 
@@ -562,6 +681,9 @@ These are proven and well-tooled but carry multimedia-specific framing (PIDs, PA
 - **ZIP** — Central Directory at end breaks streaming read.
 - **7-Zip** — headers at end, no streaming.
 - **RAR** — proprietary, no interleaving.
+- **ISO 9660** — a filesystem, not an archive stream; requires pre-computed sector layout.
+- **WIM** — deployment image format; must patch header with resource table offset.
+- **CAB** — Windows installer archive; header requires pre-computed offsets and counts.
 - **HTTP/1.1 chunked** — excellent single-stream streaming; but no native multiplexing (chunk extensions hack is theoretical only).
 - **ASF** — Microsoft proprietary, needs file-size in header.
 - **CAF** — Apple-only, audio-specific.
@@ -714,3 +836,6 @@ This makes the **LTV custom framing** approach even more attractive: its 8-byte 
 - [RFC 7540 — Hypertext Transfer Protocol Version 2 (HTTP/2)](https://www.rfc-editor.org/rfc/rfc7540)
 - [RFC 4254 — The Secure Shell (SSH) Connection Protocol](https://www.rfc-editor.org/rfc/rfc4254)
 - [RFC 2046 — MIME Part Two: Media Types (Multipart)](https://www.rfc-editor.org/rfc/rfc2046#section-5.1)
+- [ECMA-119 / ISO 9660 — Volume and File Structure of CD-ROM](https://www.ecma-international.org/publications-and-standards/standards/ecma-119/)
+- [WIM File Format (Microsoft)](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/xpewim/wim-file-format)
+- [Microsoft Cabinet File Format](https://learn.microsoft.com/en-us/previous-versions/bb267310(v=msdn.10))
