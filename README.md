@@ -145,7 +145,7 @@ All 45 formats evaluated across every key criterion in a single table. This cons
 
 **Key observations from the unified view**:
 - **11 formats are 7z-extractable** — all archives, **none** with native interleaving
-- **18 formats support native interleaving** — none are 7z-extractable (gRPC and AMQP 1.0 join the multiplexing group)
+- **19 formats support native interleaving** — none are 7z-extractable (gRPC and AMQP 1.0 join the multiplexing group)
 - **TAR (with chunk hack)** is the **only** entry that spans both columns — 7z-extractable AND interleaving (via naming convention)
 - All multiplexing protocols (HTTP/2, QUIC, SCTP, SSH, gRPC, AMQP) use **numeric stream IDs** or protocol-specific addressing — file names require application-level mapping (except MQTT's topic strings)
 - **WebSocket** is the highest-popularity format that explicitly lacks multiplexing — confirming that single-stream framing ≠ multiplexing
