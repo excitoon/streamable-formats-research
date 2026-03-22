@@ -58,7 +58,7 @@ Evaluate existing archive and container formats against the following criteria:
 | CAF | 2005 | ★★☆☆☆ | ✅ Yes (size -1 = unknown) | ✅ Yes | ✅ Audio tracks | ✅ Yes — in spec |
 | HTTP/2 framing | 2015 | ★★★★★ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec (RFC 7540) |
 | SSH channels | 1995 | ★★★★★ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec (RFC 4254) |
-| HTTP/1.1 chunked | 1997 | ★★★★★ | ✅ Yes | ✅ Yes | ❌ None known | ⚠️ Possible via chunk extensions (RFC 7230 §4.1.1) |
+| HTTP/1.1 chunked | 1997 | ★★★★★ | ✅ Yes | ✅ Yes | ❌ None known (but viable for pipes) | ✅ Via chunk extensions (RFC 7230 §4.1.1) — works over pipes, not over HTTP infra |
 | MIME multipart | 1996 | ★★★★★ | ✅ Yes | ✅ Yes | ❌ None known | ❌ Parts are sequential, not interleaved |
 | ISO 9660 | 1988 | ★★★★☆ | ❌ No (requires pre-computed sector layout) | ❌ No (random-access by design) | ❌ None known | ❌ Not in spec |
 | WIM | 2006 | ★★★☆☆ | ❌ No (must patch header with resource table offset) | ❌ No | ❌ None known | ❌ Not in spec |
@@ -118,7 +118,7 @@ All 39 formats evaluated across every key criterion in a single table. This cons
 | **Protobuf delimited** | 2008 | ★★★★☆ | ✅ | ❌ Standard | ❌ | ❌ Field tags | ❌ None (EOF) | Binary | Data |
 | **HTTP/2 framing** | 2015 | ★★★★★ | ✅ | ✅ Native | ❌ | ⚠️ Via headers | ✅ END_STREAM/stream | Binary | Protocol |
 | **SSH channels** | 1995 | ★★★★★ | ✅ | ✅ Native | ❌ | ⚠️ Channel type | ✅ CLOSE/channel | Binary | Protocol |
-| **HTTP/1.1 chunked** | 1997 | ★★★★★ | ✅ | ❌ | ❌ | ❌ N/A | ✅ Zero-length chunk | Text | Protocol |
+| **HTTP/1.1 chunked** | 1997 | ★★★★★ | ✅ | ⚠️ Via extensions | ❌ | ❌ N/A | ✅ Zero-length chunk | Text | Protocol |
 | **MIME multipart** | 1996 | ★★★★★ | ✅ | ❌ | ❌ | ⚠️ Content-Disposition | ✅ Close boundary | Text | Protocol |
 | **QUIC** | 2021 | ★★★★☆ | ✅ | ✅ Native | ❌ | ❌ Numeric IDs | ✅ FIN bit/stream | Binary | Protocol |
 | **SCTP** | 2000 | ★★★☆☆ | ✅ | ✅ Native | ❌ | ❌ Numeric IDs | ✅ SHUTDOWN | Binary | Protocol |
@@ -453,24 +453,30 @@ This is syntactically valid HTTP/1.1. Existing HTTP clients/proxies would parse 
 
 **Sequential-read streaming**: ✅ Fully supported. Chunks are self-delimiting and parseable in a single forward pass.
 
-**Chunk interleaving (implementations)**: ❌ No known implementation uses chunk extensions for stream multiplexing. All existing HTTP/1.1 usage treats chunked encoding as a single-stream framing. MIME multipart responses are sequential (one part at a time), not interleaved.
+**Chunk interleaving (implementations)**: ❌ No known implementation uses chunk extensions for stream multiplexing **over HTTP**. All existing HTTP/1.1 usage treats chunked encoding as a single-stream framing. MIME multipart responses are sequential (one part at a time), not interleaved.
 
-**Chunk interleaving (theoretical)**: ⚠️ Partially possible. Chunk extensions could carry stream IDs, making interleaved multiplexing syntactically valid per RFC 7230. However:
-- The RFC says recipients "MUST ignore chunk extensions they do not understand" — so existing clients would silently flatten the multiplexed stream into one concatenated byte sequence.
-- MIME `multipart/mixed` boundaries delimit **complete sequential parts**, not interleaved chunks. There is no standard way to interleave parts.
-- `multipart/x-mixed-replace` (used in MJPEG) replaces the previous part with the current one — this is sequential replacement, not multiplexing.
+**Chunk interleaving (theoretical / pipe use)**: ✅ **Actually viable for pipes.** Chunk extensions are fully specified in RFC 7230 §4.1.1 — adding `;stream=N` to each chunk is syntactically valid, well-defined, and unambiguous. For **pipe use** (not going through HTTP proxies), this is a practical multiplexing approach:
+
+- The format is **text-based** — human-readable and debuggable with `cat`, `head`, `hexdump`, standard text tools.
+- The framing is **simple to implement** — a parser only needs to read a hex number + optional extensions + CRLF, then read that many bytes + CRLF.
+- Chunk extensions are **part of the spec**, not a hack — RFC 7230 §4.1.1 defines the syntax explicitly, and §4.1.2 even defines trailer headers after the final chunk.
+- **Overhead is low**: hex-length (1–8 chars) + `;stream=N` (~10 chars) + `\r\n` (2 bytes) + data + `\r\n` (2 bytes) = ~15–22 bytes per chunk. At 64 KiB payloads: ~0.03%.
+
+The reason this doesn't work **over HTTP infrastructure** is that proxies/CDNs/clients would silently strip or ignore the `;stream=N` extension and flatten all chunks into one concatenated body. But over a **pipe**, there is no intermediate infrastructure — the producer writes directly to the consumer, so the stream IDs are preserved end-to-end.
+
+**Limitations of the chunk-extension approach**:
+- No existing tooling supports it — you'd need a custom muxer/demuxer (but the same is true for any custom LTV format).
+- MIME `multipart/mixed` boundaries delimit **complete sequential parts**, not interleaved chunks. There is no standard way to interleave MIME parts.
+- Not 7z-extractable.
+- HTTP/2 was invented because HTTP/1.1 lacked native multiplexing **for the web** — but for pipes, the simpler text-based framing may be an advantage.
 
 **Overhead analysis**:
 - Chunked encoding per chunk: hex-length (1–8 chars) + `;stream=N` (~10 chars) + `\r\n` (2 bytes) + data + `\r\n` (2 bytes) = ~15–22 bytes overhead per chunk. At 64 KiB payloads: ~0.03%.
 - MIME multipart per part: boundary line (~30–70 bytes) + part headers (~50–100 bytes) + `\r\n` separators = ~100–200 bytes per part. But parts are sequential, not interleaved chunks.
 
-**Conclusion for multi-stream use**: HTTP/1.1's chunked encoding is an excellent **single-stream** streaming format — well-specified, universally implemented, low overhead. However, it was not designed for multi-stream multiplexing. The chunk-extension hack for stream tagging is theoretically valid but:
-- No existing implementation supports it for multiplexing.
-- Existing HTTP infrastructure (proxies, CDNs, clients) would not preserve stream semantics — they would concatenate all chunks into one stream.
-- MIME multipart is inherently sequential, not interleaved.
-- HTTP/2 was invented precisely because HTTP/1.1 lacked native multiplexing — this confirms the limitation is fundamental to the 1.1 design.
+**Conclusion for multi-stream use**: HTTP/1.1 chunked encoding with `;stream=N` extensions is **a viable text-based multiplexing approach for pipes**. It is well-specified (RFC 7230), text-based (human-readable), low-overhead (~0.03% at 64 KiB), and trivial to implement. The key limitation is that **no existing tool supports this convention** — but the same is true for any custom format. The advantage over binary LTV is debuggability; the disadvantage is slightly higher parsing overhead and the need for CRLF delimiter handling. Over HTTP infrastructure it wouldn't work (proxies flatten stream IDs), but over a pipe, the producer and consumer are directly connected and the extensions are preserved.
 
-HTTP/1.1 chunked encoding is valuable **as prior art for framing design** (hex-length prefix, chunk extensions, trailer headers) and demonstrates that the "streaming a single unknown-length body" problem is well-solved. But for multi-stream interleaving, HTTP/2's framing layer is the relevant evolution.
+This makes HTTP/1.1 chunked encoding a strong candidate alongside Ogg and custom LTV for pipe multiplexing — especially when text-based debuggability is valued.
 
 ---
 
@@ -842,7 +848,7 @@ When no existing format is suitable, a lightweight framing protocol can be desig
 |---|---|---|---|
 | **Netstring** | `len:data,` — trivially parseable | ✅ | ✅ (with stream tag in data) |
 | **MIME multipart** | `--boundary\r\nContent-*\r\n\r\ndata` | ✅ | ❌ (parts are sequential, not interleaved) |
-| **HTTP/1.1 chunked** | hex-length + `\r\n` + data + `\r\n` | ✅ | ⚠️ (chunk extensions could carry stream IDs; no implementations) |
+| **HTTP/1.1 chunked** | hex-length + `;stream=N` + `\r\n` + data + `\r\n` | ✅ | ✅ (via chunk extensions — works over pipes; not over HTTP infra) |
 | **HTTP/2 framing** | 9-byte frame header with stream ID | ✅ | ✅ Native |
 | **MessagePack** | Self-delimiting binary encoding | ✅ | ✅ (with envelope) |
 | **CBOR sequences** (RFC 8949 / RFC 8742) | Self-delimiting binary encoding | ✅ | ✅ (with envelope) |
@@ -1062,6 +1068,30 @@ There is no established convention for "FD 3 = metadata" or "FD 4 = progress." E
 - **Windows** has no integer FD concept at the shell level. Tools using `--status-fd 3` require a POSIX emulation layer (MSYS2, Cygwin, WSL).
 - **Process substitution** (`>(cmd)`) only works in bash, zsh, and ksh — not in POSIX sh, fish, or Nushell.
 
+#### Higher-FD redirection syntax: which FD numbers actually work?
+
+POSIX (IEEE 1003.1) specifies that the `[n]>word` redirection syntax takes a **single digit** for `n` — meaning only FDs 0–9 are guaranteed portable. Shells like bash, zsh, and ksh **extend** this to support multi-digit FD numbers (15, 99, etc.), but POSIX sh / dash do not. This is a critical portability constraint when using FDs above 9.
+
+Tested behavior for `cmd 7>file` (single-digit FD redirect) vs `cmd 15>>file` (multi-digit FD redirect):
+
+| Syntax | bash | zsh | ksh93 | dash / POSIX sh | fish | Nushell | Windows cmd | PowerShell |
+|---|---|---|---|---|---|---|---|---|
+| `7>file` | ✅ FD 7 | ✅ FD 7 | ✅ FD 7 | ✅ FD 7 | ❌ | ❌ | ❌ | ❌ |
+| `7>>file` | ✅ FD 7 | ✅ FD 7 | ✅ FD 7 | ✅ FD 7 | ❌ | ❌ | ❌ | ❌ |
+| `15>file` | ✅ FD 15 | ✅ FD 15 | ✅ FD 15 | ❌ `15` = arg | ❌ | ❌ | ❌ | ❌ |
+| `15>>file` | ✅ FD 15 | ✅ FD 15 | ✅ FD 15 | ❌ `15` = arg | ❌ | ❌ | ❌ | ❌ |
+| `99>file` | ✅ FD 99 | ✅ FD 99 | ✅ FD 99 | ❌ `99` = arg | ❌ | ❌ | ❌ | ❌ |
+| `7>&1` (dup) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `15>&1` (dup) | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+
+Key findings:
+- **bash, zsh, ksh93**: Support arbitrary multi-digit FD numbers in redirections. `15>file`, `99>>file` all work as FD redirects.
+- **dash / POSIX sh**: Only supports single-digit FDs (0–9) per POSIX spec. `15>file` is parsed as `echo 15` with stdout redirected to `file` — the `15` becomes a command argument, not a FD number. This is a **silent misparse**, not an error.
+- **fish**: No `n>file` syntax for arbitrary FDs. Fish uses `2>` for stderr but does not support general FD redirection.
+- **Nushell, Windows cmd, PowerShell**: No FD concept at the shell level.
+
+**Implication**: Using FDs ≥ 10 is limited to bash/zsh/ksh scripts. Scripts using `15>` or `99>` will **silently break** in dash/sh (the number becomes a command argument). FDs 3–9 are portable across all POSIX shells.
+
 ### Verdict: When to use higher FDs vs container formats
 
 | Criterion | Higher FDs (3+) | Container format over stdout |
@@ -1108,7 +1138,7 @@ The strongest requirement is a format that is **not multimedia-specific** — on
 | 2 | **HTTP/2 framing** | 2015 | ★★★★★ | Binary | ✅ By design | **Binary** stream multiplexer (9-byte binary frame header); but carries protocol complexity beyond just framing |
 | 3 | **QUIC** | 2021 | ★★★★☆ | Binary | ✅ By design | **Binary** transport protocol; but requires full stack (TLS, congestion control, UDP) |
 | 4 | **SCTP** | 2000 | ★★★☆☆ | Binary | ✅ By design | **Binary** transport protocol with native multi-streaming (16-bit stream IDs); but requires kernel stack |
-| 5 | **HTTP/1.1 chunked** | 1997 | ★★★★★ | Text | ✅ By design | **Text-based** framing (hex-length + CRLF); chunk extensions allow stream tagging in theory but no implementations exist |
+| 5 | **HTTP/1.1 chunked** | 1997 | ★★★★★ | Text | ✅ By design | **Text-based** framing (hex-length + CRLF); chunk extensions (`;stream=N`) provide multiplexing over pipes — the only text-based multiplexing candidate |
 | 6 | **SSH channels** | 1995 | ★★★★★ | Binary | ✅ By design | **Binary** protocol; proven channel multiplexing; but encryption/key-exchange overhead is unnecessary for local pipes |
 | 7 | **WebSocket** | 2011 | ★★★★★ | Binary | ✅ By design | **Binary** framed messages; but **single channel only** — multiplexing extension was proposed but never standardized |
 | 8 | **9P** | 1995 | ★★☆☆☆ | Binary | ✅ By design | **Binary** file access protocol with tag-based multiplexing; but requires full file-operations state machine |
@@ -1120,13 +1150,15 @@ The strongest requirement is a format that is **not multimedia-specific** — on
 | 14 | **D-Bus** | 2006 | ★★★★☆ | Binary | ⚠️ IPC-specific | **Binary** message protocol for desktop IPC; bus-level routing but not wire-level multiplexing; heavyweight type system |
 | 15 | **Custom LTV** | — | N/A | Binary | ✅ By definition | **Binary** (designer's choice); zero legacy baggage; trivial to implement; but no established standard/tooling |
 
-**Binary vs text**: Nearly all multiplexing formats are **binary** protocols — HTTP/2, QUIC, SSH, Ogg, Protobuf all use binary framing for efficiency. The notable exception is **HTTP/1.1 chunked encoding**, which uses **text-based** framing (`hex-length\r\n...data...\r\n`), making it human-readable and debuggable with standard text tools — but it lacks multiplexing. **WARC** uses text headers (HTTP-style `Key: Value\r\n`) with binary payloads, giving it readability for metadata while keeping payload efficiency. Among multiplexing candidates, there is no established text-based format — this is because text framing adds parsing overhead and ambiguity (delimiter escaping) that binary length-prefixed formats avoid.
+**Binary vs text**: Nearly all multiplexing formats are **binary** protocols — HTTP/2, QUIC, SSH, Ogg, Protobuf all use binary framing for efficiency. The notable exception is **HTTP/1.1 chunked encoding with chunk extensions** (`;stream=N`), which provides a **text-based multiplexing** option: `hex-length;stream=N\r\n...data...\r\n`. Over HTTP infrastructure (proxies, CDNs) the stream extensions would be stripped, but **over pipes** (direct producer→consumer), the extensions are preserved — making this the only text-based multiplexing approach with a standards basis. **WARC** uses text headers (HTTP-style `Key: Value\r\n`) with binary payloads, giving it readability for metadata while keeping payload efficiency.
 
 **Ogg** (RFC 3533, 2003) is the **best general-purpose candidate among established formats by specification**. Despite its reputation as "the Vorbis/Opus container," RFC 3533 is explicitly a general-purpose bitstream encapsulation format — it defines pages, stream serial numbers, and granule positions with no multimedia-specific semantics. An Ogg stream carrying arbitrary tagged data chunks is fully spec-compliant. It has IETF standardization, clean implementations (`libogg` in C, crates in Rust, packages in Python/Go), and ~0.5–1% framing overhead with CRC-32 integrity.
 
 **Critical caveat**: In practice, Ogg is entirely a multimedia format. No general-purpose archive tool can handle it — `7z x file.ogg` does not work, `file(1)` reports it as audio/video, and every existing library/tool assumes multimedia content. Using Ogg for arbitrary data would mean writing Ogg pages directly (the page format is simple enough for a clean-room implementation) while accepting that no user or tool in the ecosystem would recognize the result as anything but a broken media file. This gap between spec and ecosystem is the central tension.
 
 **HTTP/2 framing** (RFC 7540, 2015) is the most widely deployed general-purpose multiplexing format in the world, with universal browser/server/CDN support. It is a **binary protocol** — the 9-byte frame header contains binary-encoded fields (3-byte length, 1-byte type, 1-byte flags, 31-bit stream ID), not human-readable text. This was a deliberate design choice: HTTP/1.1 was text-based (human-readable headers), and HTTP/2 switched to binary framing specifically for parsing efficiency and to eliminate text-parsing ambiguities. Its 31-bit stream ID is exactly the "stream N, chunk M" primitive needed. However, extracting just the framing layer from HTTP/2 means ignoring most of the spec (HPACK, flow control, SETTINGS, stream priorities) — it would be using ~5% of a complex protocol. HTTP/2 framing is best understood as **prior art / inspiration** for a new minimal multiplexing format, rather than a format to use directly.
+
+**HTTP/1.1 chunked encoding with chunk extensions** (RFC 7230, 1997) deserves re-evaluation for the **pipe-specific** use case. The chunk extension mechanism (`;stream=N`) is fully specified in RFC 7230 §4.1.1 — adding a stream ID to each chunk is syntactically valid and unambiguous. Over HTTP infrastructure (proxies, CDNs), extensions would be stripped, but **over a pipe** (direct producer→consumer), there is no intermediate infrastructure to flatten the stream IDs. This makes HTTP/1.1 chunked the **only text-based multiplexing candidate**: human-readable with `cat`, debuggable with standard text tools, ~0.03% overhead at 64 KiB chunks, and a zero-length chunk provides a container-level tombstone. The limitation is that no existing tool supports the `;stream=N` convention — but the same is true for any custom binary format.
 
 **SSH channels** (RFC 4254, since ~1995) are the oldest general-purpose multiplexing mechanism still in universal production use. However, the encryption and connection-setup overhead makes it impractical for local pipe multiplexing.
 
@@ -1169,13 +1201,15 @@ Evaluated on streaming (no patching), interleaving, general-purpose suitability,
 
 2. **Ogg** — the best fit **by specification** for general-purpose use. IETF standard (RFC 3533), explicitly general-purpose by spec, clean page-based multiplexing with CRC integrity, ~0.5–1% overhead, **per-stream EOS flag** for tombstones. **Binary** format (not human-readable). **Major practical limitation**: all existing tooling is multimedia-only — no archive utility recognizes Ogg for arbitrary data (`7z x file.ogg` won't work). Requires a clean-room page writer (~200 lines of C) and accepting that no existing ecosystem tool will help users inspect the result.
 
-3. **Custom LTV framing** — minimal overhead (~0.01%), trivial to implement (8-byte header: stream_id + length), language-agnostic. **Binary** format (can be designed text-based if desired, e.g., using HTTP/1.1 chunked-style hex lengths). **Should include a container-level end marker** in the design for tombstone functionality. Best choice when no legacy format compatibility is needed and simplicity is paramount.
+3. **HTTP/1.1 chunked with `;stream=N` extensions** — the **only text-based multiplexing candidate**. RFC 7230 §4.1.1 defines chunk extensions; adding `;stream=N` is syntactically valid and well-specified. Over pipes (direct producer→consumer), chunk extensions are preserved — no HTTP proxy stripping. ~0.03% overhead at 64 KiB chunks. Human-readable and debuggable with `cat`/`head`. Trailer headers (RFC 7230 §4.1.2) can carry per-stream metadata. Zero-length chunk provides a container-level tombstone. **Limitation**: no existing tooling supports the `;stream=N` convention (custom muxer/demuxer needed), not 7z-extractable, and over HTTP infrastructure (proxies/CDNs) the extensions would be flattened.
 
-4. **MPEG-TS** — the most battle-tested streaming format (30 years, digital TV worldwide). **Binary** format. Best choice if multimedia tooling integration is desired or error-resilient sync recovery matters. **Lacks end markers entirely** (by design, for broadcast) — truncation detection requires application-level signaling.
+4. **Custom LTV framing** — minimal overhead (~0.01%), trivial to implement (8-byte header: stream_id + length), language-agnostic. **Binary** format (can be designed text-based if desired, e.g., using HTTP/1.1 chunked-style hex lengths). **Should include a container-level end marker** in the design for tombstone functionality. Best choice when no legacy format compatibility is needed and simplicity is paramount.
 
-5. **HTTP/2 framing (inspiration)** — a **binary** protocol (the 9-byte frame header with **END_STREAM flag** and **GOAWAY** connection shutdown is worth studying as prior art for any new "mux" format). HTTP/2 is explicitly **not** a text format — it was designed as a binary replacement for HTTP/1.1's text-based framing. Using the full HTTP/2 spec directly is overkill; the framing layer design is the useful takeaway.
+5. **MPEG-TS** — the most battle-tested streaming format (30 years, digital TV worldwide). **Binary** format. Best choice if multimedia tooling integration is desired or error-resilient sync recovery matters. **Lacks end markers entirely** (by design, for broadcast) — truncation detection requires application-level signaling.
 
-6. **QUIC / SCTP (inspiration)** — **binary** transport protocols representing the state-of-the-art (QUIC, RFC 9000, 2021) and the original (SCTP, RFC 4960, 2000) in multiplexed transport design. Per-stream FIN bit (QUIC), independent streams without HOL blocking (both), and 62-bit (QUIC) / 16-bit (SCTP) stream IDs. SCTP predates QUIC by 21 years and proves that independent multi-streaming was recognized as a fundamental transport need. Both are useful as prior art rather than direct reuse — they require full transport stacks (TLS, congestion control, kernel sockets).
+6. **HTTP/2 framing (inspiration)** — a **binary** protocol (the 9-byte frame header with **END_STREAM flag** and **GOAWAY** connection shutdown is worth studying as prior art for any new "mux" format). HTTP/2 is explicitly **not** a text format — it was designed as a binary replacement for HTTP/1.1's text-based framing. Using the full HTTP/2 spec directly is overkill; the framing layer design is the useful takeaway.
+
+7. **QUIC / SCTP (inspiration)** — **binary** transport protocols representing the state-of-the-art (QUIC, RFC 9000, 2021) and the original (SCTP, RFC 4960, 2000) in multiplexed transport design. Per-stream FIN bit (QUIC), independent streams without HOL blocking (both), and 62-bit (QUIC) / 16-bit (SCTP) stream IDs. SCTP predates QUIC by 21 years and proves that independent multi-streaming was recognized as a fundamental transport need. Both are useful as prior art rather than direct reuse — they require full transport stacks (TLS, congestion control, kernel sockets).
 
 ### Non-starters for multi-stream use
 
@@ -1188,7 +1222,7 @@ Evaluated on streaming (no patching), interleaving, general-purpose suitability,
 - **WIM** — deployment image format; must patch header with resource table offset.
 - **CAB** — Windows installer archive; header requires pre-computed offsets and counts.
 - **XAR** — XML TOC at beginning references heap by offset; requires pre-computation.
-- **HTTP/1.1 chunked** — excellent single-stream streaming; but no native multiplexing (chunk extensions hack is theoretical only).
+- **HTTP/1.1 chunked (over HTTP infra)** — over proxies/CDNs, chunk extensions are stripped, so stream IDs are lost. But **over pipes** (direct producer→consumer), chunk extensions with `;stream=N` ARE viable — see #3 in the best candidates ranking above.
 - **AVI/RIFF** — native interleaving, but RIFF header requires total size (patching); multimedia-specific.
 - **IFF** — historically important (1985, first general-purpose TLV container), but chunk sizes needed upfront.
 - **ASF** — Microsoft proprietary, needs file-size in header.
