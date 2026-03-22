@@ -22,9 +22,9 @@ The standard UNIX file descriptor table offers workarounds:
 | 2 (stderr) | Error messages |
 | 3, 4, 5 … | Additional I/O (rarely used by convention) |
 
-Using `stderr` as a second output channel is possible but semantically wrong and fragile. Using higher-numbered file descriptors (3, 4, 5, …) is technically possible at the OS level, but shell and tooling support varies widely (see [Higher Pipes Compatibility](#higher-pipes-fd-3-4-5--compatibility-with-shells)).
+Using `stderr` as a second output channel is possible but semantically wrong and fragile. Using higher-numbered file descriptors (3, 4, 5, …) is technically possible at the OS level and **works well for simple cases** — tools like GPG (`--status-fd 3`) and bubblewrap (`--json-status-fd N`) use this pattern successfully. However, higher FDs don't compose across pipeline stages (`|` only connects FD 1→0), require per-tool flag conventions, and aren't portable to all shells or Windows (see [Higher Pipes — Can They Actually Work?](#higher-pipes-fd-3-4-5---can-they-actually-work)).
 
-The most portable and interoperable alternative is to **multiplex several logical streams into a single byte stream** — i.e., to send a container or archive format through stdout, where the container supports genuine chunk-level interleaving of multiple member files/streams.
+For general-purpose multi-stream pipelines (arbitrary named streams, composable across stages, portable across shells and platforms), the most practical alternative is to **multiplex several logical streams into a single byte stream** — i.e., to send a container or archive format through stdout, where the container supports genuine chunk-level interleaving of multiple member files/streams.
 
 ### Research Goals
 
@@ -945,97 +945,146 @@ This means MPEG-TS and FLV (no end markers at all) remain ruled out for clean te
 
 ---
 
-## Higher Pipes (FD 3, 4, 5 …) Compatibility with Shells
+## Higher Pipes (FD 3, 4, 5 …) — Can They Actually Work?
 
-UNIX processes inherit file descriptors from their parent. In principle, any number of FDs can be used for communication between processes connected via `pipe(2)` system calls. The question is how well **shells** support setting up such pipes for arbitrary commands.
+UNIX processes inherit file descriptors from their parent. In principle, any number of FDs can be used for communication between processes connected via `pipe(2)` system calls. **Higher FDs are fully functional at the OS level and ARE used successfully by real-world tools** — the question is whether they scale to a general-purpose multi-stream piping solution.
 
 ### OS / Kernel Level
 
 At the OS level, higher file descriptors are fully supported by all POSIX systems. There is no inherent limit preventing FD 3, 4, 5, … from being used as pipes. The `pipe(2)` system call returns two FDs (read end and write end) that can be any available integer. The `RLIMIT_NOFILE` resource limit controls the maximum number of open FDs per process (typically 1024 soft, 65536 hard on Linux), not the specific numbers.
 
-### Shell Compatibility
+### Real-world tools that use higher FDs successfully
 
-#### Bash (GNU Bourne Again Shell)
+Higher FDs are not theoretical — several well-known tools use them in production:
 
-**Version**: 5.x (most Linux systems, macOS via Homebrew)
+| Tool | Flag | FD usage | Purpose |
+|---|---|---|---|
+| **GPG** | `--status-fd N` | Machine-readable status on FD N | Separate signing/encryption status from data output |
+| **Bubblewrap** (Flatpak) | `--json-status-fd N` | JSON container status on FD N | Monitor sandbox startup while capturing container output |
+| **apt-get** | `-o APT::Status-Fd=N` | Progress reporting on FD N | Machine-parseable progress separate from log output |
+| **GnuPG pinentry** | Built-in | FD 3 for passphrase communication | Secure passphrase channel separate from user I/O |
+| **ksh coproc** | `|&` / `print -p` | FD 3 and 4 by convention | Bidirectional IPC with coprocess |
 
-**FD redirection**: ✅ Full support. `n>file`, `n<file`, `n>&m`, `n<&m` for any `n`.
+These tools prove that higher FDs **work well for a specific pattern**: a single producer tool writing a secondary stream (status, progress, metadata) alongside its primary stdout output, consumed by a single known caller.
 
-**Higher-FD piping between commands**:
+### Working examples (bash)
+
 ```bash
-# Redirect FD 3 of cmd1 to FD 3 of cmd2 (not directly pipe-able with | )
-# Named pipe workaround:
-fd3_pipe=$(mktemp -u) && mkfifo "$fd3_pipe"
-cmd1 3>"$fd3_pipe" & cmd2 3<"$fd3_pipe"
-# Process substitution (creates unnamed pipes):
-cmd1 > >(cmd2) 2> >(cmd3)  # redirects stdout and stderr to separate commands
-# Explicit FD passing (process substitution assigns FD):
-exec 3> >(cmd2)  # opens FD 3 as write end of a pipe to cmd2
-cmd1 3>&3
+# ✅ WORKS: Single tool with status FD (the GPG pattern)
+gpg --decrypt --status-fd 3 file.gpg 3>status.txt > decrypted.dat
+
+# ✅ WORKS: Process substitution — FD 3 piped to a processor
+exec 3> >(jq '.status' > progress.json)
+my_tool --status-fd 3
+exec 3>&-
+
+# ✅ WORKS: Two streams from one producer via process substitution
+my_tool > >(handle_data) 2> >(handle_errors) 3> >(handle_metadata)
+
+# ✅ WORKS: Named pipe for FD 3 between two commands
+mkfifo /tmp/fd3_pipe
+producer --status-fd 3 3>/tmp/fd3_pipe &
+consumer < /tmp/fd3_pipe
+rm /tmp/fd3_pipe
+
+# ✅ WORKS: coproc for bidirectional communication (bash 4.0+)
+coproc DB { sqlite3 mydb.sqlite; }
+echo "SELECT count(*) FROM users;" >&${DB[1]}
+read count <&${DB[0]}
 ```
 
-**Direct `cmd1 3| cmd2` syntax**: ❌ Not supported. The `|` operator in bash only connects stdout (FD 1) of the left command to stdin (FD 0) of the right command. There is no `n|` syntax.
+### Where higher FDs break down
 
-**coproc**: ✅ Bash 4.0+ supports `coproc name { cmd; }` which provides bidirectional pipes to a background process via `$name[0]` (read FD) and `$name[1]` (write FD). These are assigned to the first available FD numbers.
+#### Problem 1: No `n|` pipe syntax exists
 
-#### Zsh
+The `|` operator is **hardcoded** to connect FD 1 (stdout) → FD 0 (stdin). No shell supports `cmd1 3| cmd2`:
 
-**FD redirection**: ✅ Full support (same syntax as bash).
+```bash
+# ❌ DOES NOT WORK in any shell:
+producer --data-fd 1 --status-fd 3  3|  status_consumer
 
-**Named pipe / process substitution**: ✅ Full support; zsh process substitution is more powerful and flexible than bash.
+# ✅ Workaround (verbose):
+mkfifo /tmp/status_pipe
+producer --status-fd 3 3>/tmp/status_pipe | data_consumer &
+status_consumer < /tmp/status_pipe
+```
 
-**Multios**: ✅ Zsh supports the `MULTIOS` option, which allows `cmd > file1 > file2` to tee output to multiple files.
+#### Problem 2: Multi-stage pipelines don't compose
 
-**Direct higher-FD piping**: ❌ Same limitation as bash — `|` is stdout-only.
+The `|` operator only connects one FD pair per stage. A pipeline `stage1 | stage2 | stage3` where each stage produces multiple output streams requires exponentially complex plumbing:
 
-#### Fish Shell
+```bash
+# Goal: stage1 produces data (FD 1) + metadata (FD 3)
+#        stage2 consumes both, produces data (FD 1) + metadata (FD 3)
+#        stage3 consumes both
 
-**FD redirection**: ✅ Partial. Fish supports `cmd 2>&1` and `cmd 2>file` but uses a different syntax for some operations.
+# ❌ DOES NOT WORK:
+stage1 | stage2 | stage3
+# stage2 only receives stage1's stdout; FD 3 is lost
 
-**Higher FD**: ⚠️ Limited. Fish has historically had limited support for arbitrary FD redirection. Fish 3.x added `cmd n> file` and `cmd n>&m` support but the surface area is smaller than bash/zsh.
+# ✅ Workaround (fragile, 5 lines instead of 1):
+mkfifo /tmp/s1_meta /tmp/s2_meta
+stage1 3>/tmp/s1_meta | stage2 3</tmp/s1_meta 3>/tmp/s2_meta | stage3 3</tmp/s2_meta
+rm /tmp/s1_meta /tmp/s2_meta
 
-**Named pipes / process substitution**: ⚠️ Fish does not support bash-style process substitution `<(cmd)`. Workarounds using temporary named pipes are needed.
+# ✅ With a container format (clean, composable):
+stage1_mux | stage2_demux_remux | stage3_demux
+```
 
-#### ksh (Korn Shell) / mksh
+The named-pipe workaround works for **2-3 stages** but becomes unwieldy for longer pipelines or when the number of streams varies per stage. Every stage must know exactly which FDs to expect from its predecessor.
 
-**FD redirection**: ✅ Full support (bash inherited most syntax from ksh).
+#### Problem 3: Tool discoverability
 
-**coproc**: ✅ ksh introduced `|&` for bidirectional pipes to a co-process and `print -p` / `read -p` to communicate with it via FDs 3 and 4 by convention.
+With `|`, tools universally know to read stdin and write stdout — this convention is so strong that tools work together without coordination. Higher FDs have no such convention:
 
-**Direct higher-FD piping**: ❌ Same limitation — `|` is stdout-only.
+```bash
+# Standard pipe: any tool that reads stdin works
+producer | consumer          # consumer reads FD 0 — universal
 
-#### dash / POSIX sh
+# Higher FDs: consumer must be explicitly told
+producer --metadata-fd 3 3>/tmp/meta | consumer
+meta_consumer < /tmp/meta   # must know to look for metadata
+```
 
-**FD redirection**: ✅ POSIX specifies `n>file`, `n<file`, `n>&m`, `n<&m`.
+There is no established convention for "FD 3 = metadata" or "FD 4 = progress." Each tool invents its own flag (`--status-fd`, `--json-status-fd`, `-o APT::Status-Fd=`), and the calling script must wire them up explicitly.
 
-**Process substitution**: ❌ Not in POSIX sh; bash/zsh extension only.
+#### Problem 4: Cross-platform and cross-shell portability
 
-**coproc**: ❌ Not in POSIX sh.
+| Capability | bash | zsh | ksh | fish | dash/sh | Nushell | Windows cmd | PowerShell |
+|---|---|---|---|---|---|---|---|---|
+| `n>file` | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| `n>&m` | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| `>(cmd)` process subst. | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `coproc` | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Named pipes (FIFO) | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ❌ | ❌ |
 
-**Direct higher-FD piping**: ❌ Not in POSIX sh.
+- **Nushell** deliberately omits higher-FD support — cross-platform design (Windows uses HANDLEs, not integer FDs). See [nushell/nushell#15650](https://github.com/nushell/nushell/issues/15650).
+- **Windows** has no integer FD concept at the shell level. Tools using `--status-fd 3` require a POSIX emulation layer (MSYS2, Cygwin, WSL).
+- **Process substitution** (`>(cmd)`) only works in bash, zsh, and ksh — not in POSIX sh, fish, or Nushell.
 
-#### Nushell
+### Verdict: When to use higher FDs vs container formats
 
-**FD redirection**: ⚠️ Limited. Nushell supports `o>` (stdout to file), `e>` (stderr to file), and `o+e>` (both to file), plus `e>|` and `o+e>|` for piping stderr. However, Nushell **does not** support arbitrary higher FD manipulation — there is no `3>file`, `exec 3>file`, or `n>&m` syntax. This is a conscious design choice: Nushell focuses on structured data pipelines and cross-platform compatibility (Windows uses HANDLEs, not integer FDs). See [nushell/nushell#15650](https://github.com/nushell/nushell/issues/15650) for the open feature request.
+| Criterion | Higher FDs (3+) | Container format over stdout |
+|---|---|---|
+| **Works for** | 1 producer + 1–2 side streams | N producers, N streams, arbitrary topology |
+| **Shell support** | bash/zsh/ksh (3 of 6) | All shells, all platforms |
+| **Composability** | Poor — breaks `cmd1 \| cmd2 \| cmd3` | Natural — standard pipe chains work |
+| **Convention** | No standard; each tool invents flags | Self-describing format in the stream |
+| **Tool discoverability** | Consumer must know about each FD | Consumer parses the format — one protocol |
+| **Cross-platform** | POSIX only (not Windows/Nushell) | Universal |
+| **Overhead** | Zero (kernel pipe, no framing) | 0.01–12.5% depending on format |
+| **Latency** | Zero (direct kernel pipe) | Minimal (chunk-level framing) |
+| **Setup complexity** | Low for 1 FD, high for N FDs | Constant regardless of stream count |
+| **Debugging** | `strace -f` / `lsof` to trace FDs | Inspect stream with format-aware tools |
 
-**Higher-FD piping**: ❌ Not supported. Tools that require higher FD passing (e.g. bubblewrap `--json-status-fd`) cannot be used directly from Nushell; a bash wrapper is needed.
+**Bottom line**: Higher FDs **are a legitimate solution** for the pattern "one tool, one side channel" (GPG, bubblewrap, apt). They have **zero overhead** and **zero latency** — when they work, they're optimal. But they **don't scale** to general-purpose multi-stream pipelines because:
 
-**Workaround**: Wrap the external command in a bash one-liner called from Nushell, or use `save` with `--stderr` for two-stream capture.
+1. No shell supports `n|` syntax — composable multi-stage pipelines require named pipes or process substitution
+2. No convention exists for FD assignment — every tool invents its own flags
+3. Portability is limited to POSIX shells on POSIX systems (excludes Nushell, Windows, fish for advanced features)
+4. The number of streams must be known at pipeline setup time — dynamic stream creation is impossible
 
-### Summary Table: Shell Higher-FD Support
-
-| Feature | bash | zsh | fish | ksh | dash/sh | nushell |
-|---|---|---|---|---|---|---|
-| `n>file`, `n<file` | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ (stdout/stderr only) |
-| `n>&m` (FD duplication) | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
-| `n| cmd` (pipe on FD n) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Process substitution `<(cmd)` | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ |
-| `coproc` | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ |
-| Named pipe workaround | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ Via bash wrapper |
-
-**Key finding**: No common POSIX shell provides a `cmd1 n| cmd2` syntax to pipe FD *n* of one command directly into FD *m* of another. All higher-FD inter-process communication requires either named pipes (FIFOs), process substitution, or explicit FD manipulation combined with subshells — all of which are more complex and less portable than the simple `|` operator.
-
-This confirms that **embedding multiple streams inside a single archive/container format piped over stdout remains the most portable and practical approach** for multi-stream CLI pipelines.
+For **general-purpose multi-stream piping** (arbitrary number of named streams, composable across pipeline stages, portable across shells and platforms), **multiplexing into a single stdout stream via a container format** remains the more practical approach. Higher FDs and container formats are complementary, not competing — use FDs for known side channels, container formats for general multiplexing.
 
 ---
 
