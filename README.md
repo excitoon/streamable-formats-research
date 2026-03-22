@@ -56,6 +56,8 @@ Evaluate existing archive and container formats against the following criteria:
 | MPEG-PS | 1993 | ★★★☆☆ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec |
 | ASF / WMV / WMA | 1996 | ★★★☆☆ | ⚠️ Header needs file size | ✅ Yes | ✅ Native interleaving | ✅ Yes — in spec |
 | CAF | 2005 | ★★☆☆☆ | ✅ Yes (size -1 = unknown) | ✅ Yes | ✅ Audio tracks | ✅ Yes — in spec |
+| HTTP/2 framing | 2015 | ★★★★★ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec (RFC 7540) |
+| SSH channels | 1995 | ★★★★★ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec (RFC 4254) |
 | Framing (custom) | — | N/A | ✅ Yes | ✅ Yes | ✅ By design | ✅ By design |
 
 ---
@@ -174,7 +176,7 @@ Evaluate existing archive and container formats against the following criteria:
 
 **Popularity**: ★★★☆☆ — widely used as the container for Vorbis audio, Theora video, Opus audio, FLAC audio, and other codecs in the open-source ecosystem.
 
-**Format overview**: The Ogg container format (RFC 3533) is built on **pages**. Each page belongs to exactly one **logical bitstream**, identified by a 32-bit serial number in the page header. Pages from different logical bitstreams are freely interleaved in the physical bitstream. A physical bitstream may contain:
+**Format overview**: The Ogg container format (RFC 3533) is defined as a **general-purpose bitstream encapsulation format** — the RFC itself is codec-agnostic and describes a transport for arbitrary logical bitstreams, not just multimedia. Each page belongs to exactly one **logical bitstream**, identified by a 32-bit serial number in the page header. Pages from different logical bitstreams are freely interleaved in the physical bitstream. A physical bitstream may contain:
 
 - A single logical bitstream (simple file).
 - Multiple **sequential** logical bitstreams (chained streams, one ends before the next begins).
@@ -188,7 +190,7 @@ Evaluate existing archive and container formats against the following criteria:
 
 **Chunk interleaving (theoretical)**: ✅ Fully specified in RFC 3533. The Ogg page structure explicitly carries a stream serial number and granule position to support arbitrary interleaving.
 
-**Conclusion for multi-stream use**: Ogg is well-suited for multi-stream interleaved streaming. The major limitation is that it is associated with multimedia codecs; using it as a general-purpose multi-stream pipe format is unusual and tooling outside the multimedia domain is sparse.
+**Conclusion for multi-stream use**: Ogg is well-suited for multi-stream interleaved streaming. Critically, **RFC 3533 is general-purpose by design** — it defines a bitstream container, not a multimedia format. The multimedia association comes from the codecs commonly carried inside Ogg (Vorbis, Opus, Theora), not from the container spec itself. An Ogg stream carrying arbitrary data chunks tagged by stream serial number is fully compliant with the RFC. The major limitation is that existing tooling (`libogg`, `oggenc`, `ffmpeg`) is multimedia-oriented — a general-purpose CLI multiplexer using Ogg would need a thin wrapper over `libogg` or a clean-room page writer (which is simple given the page format).
 
 ---
 
@@ -297,6 +299,42 @@ Evaluate existing archive and container formats against the following criteria:
 **Chunk interleaving (theoretical)**: ✅ Defined in the CAF specification.
 
 **Conclusion for multi-stream use**: Apple-centric and audio-only in practice. Not suitable for general-purpose multi-stream piping.
+
+---
+
+#### HTTP/2 Framing (RFC 7540 / RFC 9113)
+
+**Popularity**: ★★★★★ — the dominant web transport protocol since 2015. Every major browser, web server, CDN, and proxy supports HTTP/2. Libraries exist in every language (nghttp2 in C, h2 in Rust/Python, net/http in Go, etc.).
+
+**Format overview**: HTTP/2's binary framing layer is a **general-purpose stream multiplexer**. Each frame has a 9-byte header: 3-byte length, 1-byte type, 1-byte flags, and a 31-bit **stream identifier**. Multiple streams are interleaved over a single connection. While HTTP/2 defines frame types for HTTP semantics (HEADERS, DATA, etc.), the underlying framing layer is a clean length-prefixed multiplexer.
+
+**Sequential-write streaming**: ✅ Fully supported — no patching needed. Each frame is self-contained with its length in the header; frames are written forward-only.
+
+**Sequential-read streaming**: ✅ Fully supported. A reader demultiplexes by stream ID in a single forward pass.
+
+**Chunk interleaving (implementations)**: ✅ Native — every HTTP/2 implementation interleaves frames from concurrent streams. This is the core design of the protocol.
+
+**Chunk interleaving (theoretical)**: ✅ Fully specified in RFC 7540 § 5 (Streams and Multiplexing). Stream multiplexing is the primary feature of HTTP/2 over HTTP/1.1.
+
+**Conclusion for multi-stream use**: HTTP/2 framing is the most widely deployed general-purpose multiplexing format in existence. It is **not multimedia-specific** — it was designed for arbitrary data streams. The framing layer alone (without HTTP semantics) maps cleanly to "stream N, chunk M" use cases. The main drawback is that HTTP/2 carries significant protocol-level complexity beyond just framing (flow control, HPACK header compression, stream priorities, SETTINGS negotiation) — extracting just the framing layer means ignoring most of the spec. Overhead is ~9 bytes per frame (~0.05% at 16 KB payloads).
+
+---
+
+#### SSH Channel Protocol (RFC 4254)
+
+**Popularity**: ★★★★★ — SSH is installed on virtually every server and developer machine worldwide. OpenSSH, libssh, libssh2, Paramiko, golang.org/x/crypto/ssh — implementations exist in every major language.
+
+**Format overview**: The SSH connection protocol (RFC 4254) multiplexes multiple **channels** over a single encrypted SSH connection. Each channel has a numeric ID and data is sent in `SSH_MSG_CHANNEL_DATA` messages tagged with the channel number. Channels can be opened, closed, and flow-controlled independently.
+
+**Sequential-write streaming**: ✅ Fully supported — no patching needed. Channel data messages are written forward-only.
+
+**Sequential-read streaming**: ✅ Fully supported. Messages are demultiplexed by channel ID in a single forward pass.
+
+**Chunk interleaving (implementations)**: ✅ Native — every SSH implementation interleaves data from multiple channels (e.g., port forwarding, X11, shell sessions simultaneously).
+
+**Chunk interleaving (theoretical)**: ✅ Fully specified in RFC 4254. Channel multiplexing is the core design of the SSH connection protocol.
+
+**Conclusion for multi-stream use**: SSH channels are a proven general-purpose multiplexing mechanism with 30 years of production use. However, SSH carries substantial protocol overhead (encryption, key exchange, MAC, connection setup) that is unnecessary for local piping between processes. Using SSH channel framing without the full SSH protocol would mean extracting a small part of a large spec. More suitable as prior art than as a direct candidate.
 
 ---
 
@@ -427,28 +465,44 @@ The ideal candidate would be a format as popular and well-established as ZIP or 
 - **ZIP** (1989, ★★★★★) — cannot even be read in a forward-only pass (Central Directory at end), let alone interleave.
 - **7-Zip** (1999, ★★★★☆) — requires patching the start header; no streaming at all.
 
-Among formats that **do** support both streaming and interleaving, ranked by establishment:
+### General-purpose (non-multimedia) candidates
+
+The strongest requirement is a format that is **not multimedia-specific** — one designed for arbitrary data streams, not audio/video tracks. Sorted by suitability:
+
+| Rank | Format | Year | Popularity | General-purpose? | Notes |
+|---|---|---|---|---|---|
+| 1 | **Ogg** | 2003 | ★★★☆☆ | ✅ By spec (RFC 3533) | Spec defines "general-purpose bitstream encapsulation"; multimedia association is by convention only |
+| 2 | **HTTP/2 framing** | 2015 | ★★★★★ | ✅ By design | Stream multiplexer for arbitrary data; but carries protocol complexity beyond just framing |
+| 3 | **SSH channels** | 1995 | ★★★★★ | ✅ By design | Proven channel multiplexing; but encryption/key-exchange overhead is unnecessary for local pipes |
+| 4 | **Custom LTV** | — | N/A | ✅ By definition | Zero legacy baggage; trivial to implement; but no established standard/tooling |
+
+**Ogg** (RFC 3533, 2003) is the **best general-purpose candidate among established formats**. Despite its reputation as "the Vorbis/Opus container," RFC 3533 is explicitly a general-purpose bitstream encapsulation format — it defines pages, stream serial numbers, and granule positions with no multimedia-specific semantics. An Ogg stream carrying arbitrary tagged data chunks is fully compliant. It has IETF standardization, clean implementations (`libogg` in C, crates in Rust, packages in Python/Go), and ~0.5–1% framing overhead with CRC-32 integrity. The only real limitation is that **existing tooling assumes multimedia content** — a general-purpose multiplexer would need a thin wrapper or a clean-room page writer (the page format is simple: 27-byte header + segment table + data).
+
+**HTTP/2 framing** (RFC 7540, 2015) is the most widely deployed general-purpose multiplexing format in the world, with universal browser/server/CDN support. Its 9-byte frame header with 31-bit stream ID is exactly the "stream N, chunk M" primitive needed. However, extracting just the framing layer from HTTP/2 means ignoring most of the spec (HPACK, flow control, SETTINGS, stream priorities) — it would be using ~5% of a complex protocol. Suitable as prior art / inspiration rather than direct reuse.
+
+**SSH channels** (RFC 4254, since ~1995) are the oldest general-purpose multiplexing mechanism still in universal production use. However, the encryption and connection-setup overhead makes it impractical for local pipe multiplexing.
+
+### Multimedia formats that also qualify
+
+Among formats that support both streaming and interleaving but are multimedia-oriented:
 
 | Rank | Format | Year | Popularity | All criteria met? |
 |---|---|---|---|---|
 | 1 | **MPEG-TS** | 1995 | ★★★★☆ | ✅ Yes — no patching, native interleaving, massive tooling |
 | 2 | **MPEG-PS** | 1993 | ★★★☆☆ | ✅ Yes — but declining adoption |
-| 3 | **Ogg** | 2003 | ★★★☆☆ | ✅ Yes — RFC 3533, cleanest spec for non-AV use |
-| 4 | **Matroska** | 2002 | ★★★★☆ | ⚠️ Conditional — needs SeekHead omitted for no-patch write |
+| 3 | **Matroska** | 2002 | ★★★★☆ | ⚠️ Conditional — needs SeekHead omitted for no-patch write |
 
-**MPEG-TS** (ISO 13818-1, 1995) is the oldest and most widely deployed format that meets all four criteria. It has 30 years of production use in digital television worldwide, tooling in every language (ffmpeg, GStreamer, VLC, hardware decoders), and its 188-byte fixed packet design was built for exactly this kind of unreliable forward-only streaming. The main drawback for general-purpose CLI use is its multimedia orientation — PID allocation, PAT/PMT tables, and PES framing add conceptual overhead when you just want to multiplex two byte streams.
-
-**Ogg** (RFC 3533, 2003) is the cleanest fit for non-multimedia use: its page structure (stream serial number + granule position) maps naturally to "stream N, chunk M" semantics without multimedia baggage. It is an IETF standard and has clean C (`libogg`), Rust, Python, and Go implementations. The trade-off is lower mainstream popularity — it is well-known in the open-source audio world but not a household name like ZIP.
+These are proven and well-tooled but carry multimedia-specific framing (PIDs, PAT/PMT, PES headers, track entries) that adds unnecessary conceptual and byte overhead for general-purpose data multiplexing.
 
 ### Best candidates for a multi-stream streaming pipe format
 
-1. **MPEG-TS** — the most mature and proven format for streaming interleaved data over unreliable channels. Excellent tooling (ffmpeg, GStreamer, VLC). Fixed-size 188-byte packets simplify synchronization and recovery. Best choice if multimedia tooling integration is desired.
+1. **Ogg** — the best fit for general-purpose use. IETF standard (RFC 3533), explicitly general-purpose by spec, clean page-based multiplexing with CRC integrity, ~0.5–1% overhead. Requires wrapping `libogg` or writing a simple page emitter (~200 lines of C).
 
-2. **Ogg** — well-specified open standard (RFC 3533), explicit multi-stream support, lighter weight than MPEG-TS. Good choice for non-multimedia applications due to clear, simple page structure and open specification.
+2. **Custom LTV framing** — minimal overhead (~0.01%), trivial to implement (8-byte header: stream_id + length), language-agnostic. Best choice when no legacy format compatibility is needed and simplicity is paramount.
 
-3. **Custom LTV framing** — minimal overhead, simple to implement correctly, language-agnostic. Best choice for new tooling where no legacy format compatibility is required.
+3. **MPEG-TS** — the most battle-tested streaming format (30 years, digital TV worldwide). Best choice if multimedia tooling integration is desired or error-resilient sync recovery matters.
 
-4. **Matroska/EBML** — richest metadata support, good tooling, but more complex than Ogg or MPEG-TS. Worth considering if multimedia integration is important.
+4. **HTTP/2 framing (inspiration)** — the 9-byte frame header design is worth studying as prior art for any new "mux" format, even if using the full HTTP/2 spec is overkill.
 
 ### Non-starters for multi-stream use
 
@@ -456,10 +510,12 @@ Among formats that **do** support both streaming and interleaving, ranked by est
 - **ZIP** — Central Directory at end breaks streaming read.
 - **7-Zip** — headers at end, no streaming.
 - **RAR** — proprietary, no interleaving.
+- **ASF** — Microsoft proprietary, needs file-size in header.
+- **CAF** — Apple-only, audio-specific.
 
 ### Open questions / TBD
 
-- TBD: Feasibility of a new minimal open spec designed specifically for general-purpose multi-stream CLI piping (working name: "mux").
+- TBD: Feasibility of a new minimal open spec designed specifically for general-purpose multi-stream CLI piping (working name: "mux"). HTTP/2's 9-byte frame header and Ogg's page structure are the strongest prior art to draw from.
 
 ---
 
