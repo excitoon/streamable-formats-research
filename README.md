@@ -80,13 +80,19 @@ Evaluate existing archive and container formats against the following criteria:
 | 9P | 1995 | ★★☆☆☆ | ✅ Yes | ✅ Yes | ✅ Native (tag-based) | ✅ Yes — in spec |
 | Cap'n Proto RPC | 2013 | ★★☆☆☆ | ✅ Yes | ✅ Yes | ✅ Native (question IDs) | ✅ Yes — in spec |
 | CBOR sequences | 2020 | ★★★☆☆ | ✅ Yes | ✅ Yes | ❌ None known | ⚠️ Possible with convention |
+| NDJSON / JSON Lines | 2013 | ★★★★☆ | ✅ Yes | ✅ Yes | ❌ None known | ⚠️ Possible with convention |
+| MessagePack | 2008 | ★★★★☆ | ✅ Yes | ✅ Yes | ❌ None known | ⚠️ Possible with envelope |
+| Apache Parquet | 2013 | ★★★★★ | ❌ No (footer-based metadata) | ❌ No (random-access by design) | ❌ None known | ❌ Not in spec |
+| gRPC | 2015 | ★★★★★ | ✅ Yes (via HTTP/2) | ✅ Yes (via HTTP/2) | ✅ Native (via HTTP/2 streams) | ✅ Yes — inherits HTTP/2 multiplexing |
+| AMQP 1.0 | 2012 | ★★★☆☆ | ✅ Yes | ✅ Yes | ✅ Native (session/link multiplexing) | ✅ Yes — in spec (ISO 19464) |
+| MQTT 5.0 | 2019 | ★★★★☆ | ✅ Yes | ✅ Yes | ⚠️ Topic-based (not stream-based) | ⚠️ Via topic multiplexing |
 | Framing (custom) | — | N/A | ✅ Yes | ✅ Yes | ✅ By design | ✅ By design |
 
 ---
 
 ### Master Comparison Table
 
-All 39 formats evaluated across every key criterion in a single table. This consolidates the summary table, general-purpose candidates, 7z extractability, stream naming, tombstone markers, and wire format into one reference:
+All 45 formats evaluated across every key criterion in a single table. This consolidates the summary table, general-purpose candidates, 7z extractability, stream naming, tombstone markers, and wire format into one reference:
 
 | Format | Year | Popularity | Write-stream (no patch) | Interleaving | 7z extract | File names | Tombstone | Wire format | Category |
 |---|---|---|---|---|---|---|---|---|---|
@@ -127,17 +133,24 @@ All 39 formats evaluated across every key criterion in a single table. This cons
 | **9P** | 1995 | ★★☆☆☆ | ✅ | ✅ Tag-based | ❌ | ✅ File paths | ⚠️ Tclunk per fid | Binary | Protocol |
 | **Cap'n Proto RPC** | 2013 | ★★☆☆☆ | ✅ | ✅ Question IDs | ❌ | ❌ Question IDs | ✅ Per-question | Binary | RPC |
 | **CBOR sequences** | 2020 | ★★★☆☆ | ✅ | ❌ Standard | ❌ | ❌ N/A | ❌ None (EOF) | Binary | Data |
+| **NDJSON** | 2013 | ★★★★☆ | ✅ | ❌ Standard | ❌ | ❌ N/A | ❌ None (EOF) | Text | Data |
+| **MessagePack** | 2008 | ★★★★☆ | ✅ | ❌ Standard | ❌ | ❌ N/A | ❌ None (EOF) | Binary | Data |
+| **Apache Parquet** | 2013 | ★★★★★ | ❌ Footer-based | ❌ | ❌ | ✅ Column names | ✅ Footer magic | Binary | Data |
+| **gRPC** | 2015 | ★★★★★ | ✅ | ✅ Via HTTP/2 | ❌ | ⚠️ Via metadata | ✅ END_STREAM | Binary | RPC |
+| **AMQP 1.0** | 2012 | ★★★☆☆ | ✅ | ✅ Native | ❌ | ⚠️ Link names | ✅ Detach/Close | Binary | Protocol |
+| **MQTT 5.0** | 2019 | ★★★★☆ | ✅ | ⚠️ Via topics | ❌ | ✅ Topic strings | ✅ DISCONNECT | Binary | Protocol |
 | **Custom LTV** | — | N/A | ✅ | ✅ By design | ❌ | ✅ If designed in | ✅ If designed in | Binary | Custom |
 
 **Reading this table**: ✅ = fully supported, ⚠️ = conditional/partial, ❌ = not supported. "Interleaving" means native concurrent multi-stream interleaving. "7z extract" means `7z l file.ext` works. "Tombstone" means clean finalization detection (container-level or per-stream). The "via chunk hack" note on TAR refers to the interleaving workaround described below.
 
 **Key observations from the unified view**:
 - **11 formats are 7z-extractable** — all archives, **none** with native interleaving
-- **16 formats support native interleaving** — none are 7z-extractable
+- **18 formats support native interleaving** — none are 7z-extractable (gRPC and AMQP 1.0 join the multiplexing group)
 - **TAR (with chunk hack)** is the **only** entry that spans both columns — 7z-extractable AND interleaving (via naming convention)
-- All multiplexing protocols (HTTP/2, QUIC, SCTP, SSH) use **numeric stream IDs** — file names require application-level mapping
+- All multiplexing protocols (HTTP/2, QUIC, SCTP, SSH, gRPC, AMQP) use **numeric stream IDs** or protocol-specific addressing — file names require application-level mapping (except MQTT's topic strings)
 - **WebSocket** is the highest-popularity format that explicitly lacks multiplexing — confirming that single-stream framing ≠ multiplexing
-- Every format is **binary** except HTTP/1.1 chunked (text), MIME multipart (text), and WARC (hybrid)
+- **Apache Parquet** is the highest-popularity format that cannot be streamed at all — footer-based metadata requires the entire file before reading
+- Every format is **binary** except HTTP/1.1 chunked (text), MIME multipart (text), NDJSON (text), and WARC (hybrid)
 
 ---
 
@@ -840,6 +853,114 @@ This makes HTTP/1.1 chunked encoding a strong candidate alongside Ogg and custom
 
 ---
 
+#### NDJSON / JSON Lines (Newline-Delimited JSON)
+
+**Popularity**: ★★★★☆ — NDJSON (also known as JSON Lines, JSONL, or JSON-seq) is the de-facto standard for streaming structured data between CLI tools. Used by Elasticsearch bulk API, Apache Spark, BigQuery, jq, ndjson-cli, and countless data pipelines. The convention emerged organically around 2013; formalized by jsonlines.org and partially by RFC 7464 (JSON Text Sequences, 2015).
+
+**Format overview**: Each line is a complete, valid JSON value followed by a newline (`\n`). No framing header, no container structure, no length prefix — just concatenated JSON objects separated by newlines. This makes it trivially producible by `echo` and parseable by line-oriented tools (`grep`, `awk`, `jq`).
+
+**Sequential-write streaming**: ✅ Fully supported — each line is self-contained. Writers flush one JSON object per line.
+
+**Sequential-read streaming**: ✅ Fully supported — readers process one line at a time.
+
+**Chunk interleaving (implementations)**: ❌ No standard mechanism. All existing tools assume a homogeneous stream of objects.
+
+**Chunk interleaving (theoretical)**: ⚠️ Possible with a convention (e.g., each object contains a `"stream"` field), but NDJSON itself has no multiplexing concept.
+
+**Conclusion for multi-stream use**: NDJSON is the most widely deployed text-based streaming format for structured data. Its simplicity is both its strength (zero overhead, universal tooling) and its limitation (no framing, no multiplexing, no tombstone). For multi-stream use, each line could include a stream identifier field, but this is a convention on top of NDJSON, not a feature of it. NDJSON is relevant as a **payload format** within a multiplexing container, not as the multiplexer itself.
+
+---
+
+#### MessagePack
+
+**Popularity**: ★★★★☆ — MessagePack is a widely deployed binary serialization format ("like JSON but fast and small"). Used by Redis (RESP3 interop), Fluentd/Fluent Bit, Jupyter kernels (ZMQ+msgpack), Neovim RPC, and numerous APIs. Spec published 2008, implementations in 50+ languages.
+
+**Format overview**: MessagePack encodes data in a self-delimiting binary format where each value's type and length are encoded in the first byte(s). Like CBOR, a stream of MessagePack values can be concatenated without a container — each value is self-describing. Binary maps, arrays, strings, integers, and raw bytes are all supported.
+
+**Sequential-write streaming**: ✅ Fully supported — each value is self-contained.
+
+**Sequential-read streaming**: ✅ Fully supported — a parser reads values sequentially.
+
+**Chunk interleaving (implementations)**: ❌ No standard mechanism. Multi-stream would require a convention (e.g., each message is `[stream_id, payload_bytes]`).
+
+**Chunk interleaving (theoretical)**: ⚠️ Possible with an envelope convention, but MessagePack itself has no multiplexing concept.
+
+**Conclusion for multi-stream use**: MessagePack is a popular binary alternative to JSON with self-delimiting encoding. Like CBOR and Protobuf, it's a serialization format rather than a multiplexing container. Multi-stream use requires an application-level envelope. MessagePack is more relevant as a payload encoding within a multiplexing framing layer.
+
+---
+
+#### Apache Parquet
+
+**Popularity**: ★★★★★ — Apache Parquet is the dominant columnar storage format for big data analytics. Used by Apache Spark, Apache Arrow, Pandas, DuckDB, Snowflake, BigQuery, Athena, and virtually every modern data warehouse. Created in 2013 by Twitter and Cloudera, now an Apache top-level project.
+
+**Format overview**: Parquet is a **footer-based** columnar format. Data is organized into row groups containing column chunks, with all metadata (schema, row group locations, column statistics, min/max values) stored in a **footer at the end of the file**. A 4-byte magic number (`PAR1`) appears at both the beginning and end. The reader must seek to the end to find the footer before it can interpret any data.
+
+**Sequential-write streaming**: ❌ Not supported — the footer containing all metadata must be written **after** all data. While row groups can be written sequentially, the file is not valid until the footer is appended. A writer must either buffer or seek back.
+
+**Sequential-read streaming**: ❌ Not supported — the reader must read the footer (at end of file) first to know the schema, row group locations, and column chunk offsets. Forward-only reading is impossible.
+
+**Chunk interleaving (implementations)**: ❌ None — Parquet is a single-schema columnar format; no concept of multiple independent streams.
+
+**Chunk interleaving (theoretical)**: ❌ Not feasible — the format is fundamentally random-access by design.
+
+**Conclusion for multi-stream use**: Parquet is a complete non-starter for streaming pipe use. Its footer-based design requires the entire file to exist before it can be read. Included because its extreme popularity (★★★★★) means users will ask "why not Parquet?" — and the answer is that columnar analytics formats are the opposite of streaming formats by design. Parquet is optimized for reading subsets of columns from stored files, not for producing data incrementally.
+
+---
+
+#### gRPC (Google Remote Procedure Call)
+
+**Popularity**: ★★★★★ — gRPC is Google's open-source RPC framework, universally deployed for microservice communication. Used by Google Cloud, Kubernetes, Envoy, Buf, and thousands of production systems. Created in 2015, based on HTTP/2 + Protocol Buffers.
+
+**Format overview**: gRPC runs on top of **HTTP/2** and inherits its binary framing and stream multiplexing. Each RPC call maps to an HTTP/2 stream. gRPC adds its own 5-byte length-prefixed message framing on top of HTTP/2 DATA frames: 1 byte compressed flag + 4 bytes message length + serialized protobuf message. Supports unary, server-streaming, client-streaming, and bidirectional streaming RPCs.
+
+**Sequential-write streaming**: ✅ Fully supported — gRPC streaming RPCs produce messages incrementally.
+
+**Sequential-read streaming**: ✅ Fully supported — messages arrive in order per stream.
+
+**Chunk interleaving (implementations)**: ✅ Native — inherits HTTP/2's stream multiplexing. Multiple concurrent RPCs on the same connection are interleaved at the HTTP/2 frame level.
+
+**Chunk interleaving (theoretical)**: ✅ Yes — gRPC explicitly supports multiple concurrent streams per connection.
+
+**Conclusion for multi-stream use**: gRPC is the most widely deployed multiplexing RPC framework, but it inherits **all of HTTP/2's complexity** (HPACK compression, flow control, SETTINGS negotiation) plus its own protobuf schema requirement. Using gRPC for pipe multiplexing would be like using HTTP/2 directly but even heavier — requiring a full gRPC runtime (grpc-core is ~1M lines of C++). gRPC is important as **prior art** confirming that HTTP/2-based multiplexing works at scale, but it's impractical for lightweight pipe use.
+
+---
+
+#### AMQP 1.0 (Advanced Message Queuing Protocol)
+
+**Popularity**: ★★★☆☆ — AMQP 1.0 is an ISO/IEC 19464 standardized messaging protocol used in enterprise messaging systems. Implemented by Apache Qpid, Azure Service Bus, Amazon MQ, and Red Hat AMQ. Note: AMQP 0-9-1 (used by RabbitMQ) is a different protocol; AMQP 1.0 (2012) is the OASIS/ISO standard.
+
+**Format overview**: AMQP 1.0 is a **binary** peer-to-peer protocol with connection → session → link multiplexing. A single TCP connection carries multiple sessions, each session carries multiple links (unidirectional message channels), and each link carries messages. Message framing uses type-length-value with AMQP-specific type codes. The protocol includes flow control, delivery acknowledgments, and transaction support.
+
+**Sequential-write streaming**: ✅ Fully supported — messages are sent incrementally over links.
+
+**Sequential-read streaming**: ✅ Fully supported — messages arrive in order per link.
+
+**Chunk interleaving (implementations)**: ✅ Native — multiple links on a session carry independent message streams, interleaved at the frame level. Sessions themselves can be multiplexed on a connection.
+
+**Chunk interleaving (theoretical)**: ✅ Yes — the connection/session/link hierarchy is explicitly designed for multiplexing.
+
+**Conclusion for multi-stream use**: AMQP 1.0 has the right multiplexing architecture (connection → session → link), but the protocol is **extremely heavyweight** for pipe use — it includes SASL authentication, flow control with link credit, delivery settlement (at-least-once/at-most-once/exactly-once), and a complex type system. The protocol requires a full state machine implementation. Valuable as prior art for hierarchical multiplexing design, but impractical for lightweight pipe framing.
+
+---
+
+#### MQTT 5.0 (Message Queuing Telemetry Transport)
+
+**Popularity**: ★★★★☆ — MQTT is the dominant IoT messaging protocol, used by AWS IoT Core, Azure IoT Hub, Eclipse Mosquitto, HiveMQ, and billions of connected devices. MQTT 3.1.1 (2014) is an OASIS standard; MQTT 5.0 (2019) adds significant features including topic aliases, shared subscriptions, and user properties.
+
+**Format overview**: MQTT is a **binary** publish-subscribe protocol. Clients publish messages to **topics** (UTF-8 string hierarchies like `sensors/temperature/room1`) and subscribe to topic filters with wildcards. Messages are routed through a broker. The wire format uses a 2+ byte fixed header (packet type + flags + remaining length as variable-byte integer) followed by a variable header and payload.
+
+**Sequential-write streaming**: ✅ Fully supported — PUBLISH packets are sent incrementally.
+
+**Sequential-read streaming**: ✅ Fully supported — packets arrive sequentially.
+
+**Chunk interleaving (implementations)**: ⚠️ Via topic-based routing — multiple topics on the same connection carry different data streams. However, MQTT's pub/sub model requires a broker for routing; direct peer-to-peer multiplexing is not the intended use case.
+
+**Chunk interleaving (theoretical)**: ⚠️ Topic-based multiplexing exists but is broker-mediated, not wire-level stream multiplexing.
+
+**Conclusion for multi-stream use**: MQTT's topic-based naming (`sensors/temperature/room1`) is actually close to the file-name-per-stream requirement — topics are human-readable UTF-8 strings. However, MQTT is a **broker-mediated pub/sub protocol**, not a point-to-point framing format. Using MQTT for pipe multiplexing would require running a broker process or reimplementing the protocol as peer-to-peer. MQTT 5.0's user properties could carry metadata, and topic strings provide native naming. But the broker dependency and QoS overhead make it impractical for direct pipe use. Notable as the only protocol where "stream names" (topics) are first-class wire-level concepts.
+
+---
+
 #### Custom / Generic Framing Formats
 
 When no existing format is suitable, a lightweight framing protocol can be designed. Several well-known examples exist:
@@ -917,6 +1038,12 @@ Without tombstones, a reader that simply hits EOF cannot distinguish "the writer
 | **9P** | Tclunk per fid (not per stream) | ⚠️ Protocol-level; not stream-level | ⚠️ Per-fid only |
 | **Cap'n Proto RPC** | Finish message per question | ✅ Yes — per-question completion | ⚠️ Per-question, not per-stream |
 | **CBOR sequences** | None (implicit EOF) | ⚠️ Incomplete item detectable | ❌ N/A |
+| **NDJSON** | None (implicit EOF) | ⚠️ Incomplete line/JSON detectable | ❌ N/A |
+| **MessagePack** | None (implicit EOF) | ⚠️ Incomplete value detectable | ❌ N/A |
+| **Apache Parquet** | Footer magic (`PAR1`) at end | ✅ Missing footer = truncated | ❌ N/A (not streaming) |
+| **gRPC** | END_STREAM (via HTTP/2) + Trailers | ✅ Per-stream via HTTP/2 | ✅ Yes — inherits HTTP/2 END_STREAM |
+| **AMQP 1.0** | Detach (per link) + Close (per session/connection) | ✅ Yes — missing close = unclean | ✅ Yes — Detach per link |
+| **MQTT 5.0** | DISCONNECT packet | ✅ Yes — missing DISCONNECT = unclean | ❌ No per-topic end signal |
 | **Custom LTV** | Depends on design — typically a zero-length sentinel or explicit END frame | Designer's choice — **should** include an end marker | Designer's choice |
 
 ¹ In `ar`, the reader knows each member's size from its header, so truncation *within* a member is detectable (fewer bytes than declared). But truncation *between* members is indistinguishable from a valid archive with fewer members.
@@ -925,7 +1052,7 @@ Without tombstones, a reader that simply hits EOF cannot distinguish "the writer
 
 ### Best-in-class: formats with per-stream tombstones
 
-For advanced multi-stream pipe use where individual streams may finish independently, **per-stream finalization** provides the strongest guarantees — the reader knows when each individual logical stream is complete, not just the overall container. Six formats provide this natively (though a container-level tombstone is sufficient for most use cases):
+For advanced multi-stream pipe use where individual streams may finish independently, **per-stream finalization** provides the strongest guarantees — the reader knows when each individual logical stream is complete, not just the overall container. Eight formats provide this natively (though a container-level tombstone is sufficient for most use cases):
 
 1. **Ogg** — each logical bitstream has an explicit **EOS (End of Stream) flag** in the last page's header for that stream. A reader can detect per-stream completion and distinguish it from truncation. The Ogg page CRC-32 also provides integrity checking for each page.
 
@@ -938,6 +1065,10 @@ For advanced multi-stream pipe use where individual streams may finish independe
 5. **QUIC** — the **FIN bit** on STREAM frames explicitly marks the end of each stream. **CONNECTION_CLOSE** terminates the entire connection. Per-stream finalization is a core protocol feature.
 
 6. **SCTP** — while SCTP does not have per-stream end signals (SHUTDOWN terminates the entire association), its independent stream model means a higher-level protocol can implement per-stream finalization. Included for completeness alongside other transport protocols.
+
+7. **gRPC** — inherits HTTP/2's **END_STREAM** flag for per-RPC finalization. gRPC trailers carry status codes and error messages, providing richer per-stream completion semantics than raw HTTP/2.
+
+8. **AMQP 1.0** — **Detach** performative explicitly closes individual links (message streams). **Close** terminates sessions and connections. The connection/session/link hierarchy provides per-stream finalization at multiple granularities.
 
 Formats like TAR (two zero blocks), CPIO (`TRAILER!!!`), and HTTP/1.1 chunked (zero-length chunk) have *container-level* end markers but no per-stream finalization — because they don't support multiple concurrent streams.
 
@@ -1152,10 +1283,14 @@ The strongest requirement is a format that is **not multimedia-specific** — on
 | 11 | **Cap'n Proto RPC** | 2013 | ★★☆☆☆ | Binary | ✅ By design | **Binary** zero-copy framing with question-based multiplexing; but full RPC protocol overhead |
 | 12 | **WARC** | 2009 | ★★★☆☆ | Text headers + binary payload | ✅ By spec (ISO 28500) | **Text headers** (HTTP-style) + binary payload; non-multimedia, ISO-standardized, streaming-capable; but sequential (no interleaving) |
 | 13 | **Avro OCF** | 2009 | ★★★☆☆ | Binary | ✅ Data-oriented | **Binary** with JSON schema header; streaming with sync markers; but single-schema per file (no heterogeneous streams) |
-| 14 | **D-Bus** | 2006 | ★★★★☆ | Binary | ⚠️ IPC-specific | **Binary** message protocol for desktop IPC; bus-level routing but not wire-level multiplexing; heavyweight type system |
-| 15 | **Custom LTV** | — | N/A | Binary | ✅ By definition | **Binary** (designer's choice); zero legacy baggage; trivial to implement; but no established standard/tooling |
+| 14 | **gRPC** | 2015 | ★★★★★ | Binary | ✅ By design | **Binary** multiplexing RPC; inherits HTTP/2 framing + adds 5-byte message framing; extremely popular but requires full gRPC runtime (~1M LOC) |
+| 15 | **AMQP 1.0** | 2012 | ★★★☆☆ | Binary | ✅ By spec (ISO 19464) | **Binary** connection/session/link multiplexing with named links; ISO standardized; but heavyweight protocol (SASL, flow control, delivery settlement) |
+| 16 | **MQTT 5.0** | 2019 | ★★★★☆ | Binary | ✅ By design | **Binary** pub/sub with topic-string naming (closest to file names); but requires broker or protocol reimplementation for peer-to-peer |
+| 17 | **NDJSON** | 2013 | ★★★★☆ | Text | ✅ Data-oriented | **Text-based** streaming; de-facto standard for CLI data pipelines; but no framing, no multiplexing, no tombstone |
+| 18 | **D-Bus** | 2006 | ★★★★☆ | Binary | ⚠️ IPC-specific | **Binary** message protocol for desktop IPC; bus-level routing but not wire-level multiplexing; heavyweight type system |
+| 19 | **Custom LTV** | — | N/A | Binary | ✅ By definition | **Binary** (designer's choice); zero legacy baggage; trivial to implement; but no established standard/tooling |
 
-**Binary vs text**: Nearly all multiplexing formats are **binary** protocols — HTTP/2, QUIC, SSH, Ogg, Protobuf all use binary framing for efficiency. The notable exception is **HTTP/1.1 chunked encoding with chunk extensions** (`;stream=N`), which provides a **text-based multiplexing** option: `hex-length;stream=N\r\n...data...\r\n`. Over HTTP infrastructure (proxies, CDNs) the stream extensions would be stripped, but **over pipes** (direct producer→consumer), the extensions are preserved — making this the only text-based multiplexing approach with a standards basis. **WARC** uses text headers (HTTP-style `Key: Value\r\n`) with binary payloads, giving it readability for metadata while keeping payload efficiency.
+**Binary vs text**: Nearly all multiplexing formats are **binary** protocols — HTTP/2, QUIC, SSH, Ogg, Protobuf, gRPC, AMQP all use binary framing for efficiency. The notable exceptions are **HTTP/1.1 chunked encoding with chunk extensions** (`;stream=N`), which provides a **text-based multiplexing** option: `hex-length;stream=N\r\n...data...\r\n`. Over HTTP infrastructure (proxies, CDNs) the stream extensions would be stripped, but **over pipes** (direct producer→consumer), the extensions are preserved — making this the only text-based multiplexing approach with a standards basis. **NDJSON** is the most popular text-based streaming format but lacks any multiplexing mechanism. **WARC** uses text headers (HTTP-style `Key: Value\r\n`) with binary payloads, giving it readability for metadata while keeping payload efficiency.
 
 **Ogg** (RFC 3533, 2003) is the **best general-purpose candidate among established formats by specification**. Despite its reputation as "the Vorbis/Opus container," RFC 3533 is explicitly a general-purpose bitstream encapsulation format — it defines pages, stream serial numbers, and granule positions with no multimedia-specific semantics. An Ogg stream carrying arbitrary tagged data chunks is fully spec-compliant. It has IETF standardization, clean implementations (`libogg` in C, crates in Rust, packages in Python/Go), and ~0.5–1% framing overhead with CRC-32 integrity.
 
@@ -1179,7 +1314,17 @@ The strongest requirement is a format that is **not multimedia-specific** — on
 
 **CBOR sequences** (RFC 8742, 2020) provide IETF-standardized binary streaming via concatenated self-delimiting items. The self-delimiting encoding eliminates explicit length framing, but multi-stream use requires an application-level convention (e.g., each item wraps a stream ID + payload). More relevant as a serialization choice within a multiplexing container.
 
+**gRPC** (2015) is the most widely deployed multiplexing RPC framework, used by Google Cloud, Kubernetes, and countless microservices. It runs on HTTP/2 and inherits its stream multiplexing, adding a 5-byte length-prefixed message framing (1 byte compressed flag + 4 bytes length). While gRPC confirms that HTTP/2-based multiplexing scales to millions of production systems, using gRPC for pipe multiplexing would require a full gRPC runtime (~1M lines of C++) plus protobuf schema compilation — even heavier than raw HTTP/2.
+
+**AMQP 1.0** (ISO 19464, 2012) is the only ISO-standardized messaging protocol with hierarchical multiplexing (connection → session → link). Links carry named streams (UTF-8 link names), making it one of the few protocols with native string-based stream naming. However, the protocol includes SASL authentication, flow control with link credit, delivery settlement (at-least-once/at-most-once/exactly-once semantics), and a complex type system — extremely heavyweight for pipe use.
+
+**MQTT 5.0** (OASIS, 2019) is notable for having **topic strings** as first-class wire-level concepts — the closest any protocol comes to "file names per stream." Topics like `data/output.csv` are human-readable UTF-8 hierarchies. However, MQTT is a broker-mediated pub/sub protocol; direct peer-to-peer pipe use would require either a broker process or protocol reimplementation.
+
+**NDJSON / JSON Lines** (2013) deserves mention as the **de-facto standard for streaming structured data in CLI pipelines**. Tools like `jq`, Elasticsearch, and Spark treat NDJSON as the standard streaming data format. However, NDJSON has no framing (just newlines), no multiplexing, and no tombstone — it's a payload convention, not a container format.
+
 **WARC** (ISO 28500, 2009) and **Avro OCF** (Apache, 2009) are notable as **non-multimedia** streaming formats with real adoption. WARC is used for web archiving (Internet Archive, Common Crawl) and Avro for big-data pipelines (Kafka, Hadoop). Both support streaming write (no patching) but are fundamentally **sequential** — WARC records and Avro blocks contain homogeneous data with no interleaving mechanism. They confirm that the data engineering and archiving communities have the same streaming needs, but neither format solves the interleaving problem.
+
+**Apache Parquet** (2013) is included because its extreme popularity (★★★★★ — the dominant big-data format) means users will ask about it. Parquet is a **footer-based** columnar format where all metadata is stored at the end of the file. It cannot be streamed (neither writing nor reading) — it's the anti-streaming format. This illustrates that format popularity and streaming capability are largely orthogonal.
 
 ### Multimedia formats that also qualify
 
@@ -1240,6 +1385,12 @@ Evaluated on streaming (no patching), interleaving, general-purpose suitability,
 - **D-Bus** — heavyweight IPC protocol for desktop services; bus-level routing, not wire-level multiplexing; typed message overhead.
 - **CBOR sequences** — clean IETF-standardized binary streaming, but no built-in multiplexing (requires application convention).
 - **Cap'n Proto** — zero-copy RPC framework; question-based multiplexing but requires full RPC protocol implementation.
+- **NDJSON** — excellent text-based streaming for single-stream structured data; no multiplexing, no tombstone, no framing — just JSON objects separated by newlines.
+- **MessagePack** — popular binary serialization; self-delimiting values but no multiplexing container (same category as CBOR/Protobuf).
+- **Apache Parquet** — columnar big-data format; footer-based metadata means it **cannot be streamed at all** — the entire file must exist before reading.
+- **gRPC** — inherits HTTP/2 multiplexing with universal deployment; but requires full gRPC runtime (~1M lines of C++) plus protobuf schemas — even heavier than raw HTTP/2.
+- **AMQP 1.0** — ISO-standardized messaging with named link multiplexing; but extremely heavyweight protocol (SASL, flow control, delivery settlement, type system).
+- **MQTT 5.0** — topic-based naming is attractive, but broker-mediated pub/sub model is incompatible with direct pipe use.
 
 ### 7z extractability and stream naming
 
@@ -1247,7 +1398,7 @@ A practical requirement: can the output be listed and extracted using `7z` (p7zi
 
 #### Formats supported by 7z for extraction/listing
 
-`7z` (via p7zip) can list and extract the following formats from the 39 analyzed:
+`7z` (via p7zip) can list and extract the following formats from the 45 analyzed:
 
 | Format | 7z support | Streaming (no patching) | Interleaving | File names |
 |---|---|---|---|---|
@@ -1296,9 +1447,14 @@ For multi-stream pipe use, each logical stream should be identifiable by a **nam
 | **9P** | File path (walk + fid) | ✅ Full file paths |
 | **Cap'n Proto** | Question ID (integer) | ❌ Numeric IDs only |
 | **CBOR sequences** | Application-defined per item | ❌ No standard naming |
+| **NDJSON** | Application-defined per line | ❌ No standard naming |
+| **MessagePack** | Application-defined per value | ❌ No standard naming |
+| **gRPC** | Method name (service/method path) | ⚠️ Method paths, not file names |
+| **AMQP 1.0** | Link name (UTF-8 string) | ✅ Link names |
+| **MQTT 5.0** | Topic string (UTF-8 hierarchy) | ✅ Topic strings (e.g., `data/output.csv`) |
 | **Custom LTV** | Designer's choice — can include name field | ✅ If designed with name support |
 
-**Finding**: Only archive formats (TAR, CPIO, ZIP), Matroska, D-Bus (object paths), and 9P (file paths) natively support human-readable names per stream. All other protocol-style multiplexers (HTTP/2, SSH, QUIC, SCTP, Ogg) use numeric stream IDs — file name mapping must happen at the application level (e.g., a manifest message at the start of the stream that maps stream ID → file name).
+**Finding**: Only archive formats (TAR, CPIO, ZIP), Matroska, D-Bus (object paths), 9P (file paths), AMQP 1.0 (link names), and MQTT (topic strings) natively support human-readable names per stream. All other protocol-style multiplexers (HTTP/2, SSH, QUIC, SCTP, Ogg) use numeric stream IDs — file name mapping must happen at the application level (e.g., a manifest message at the start of the stream that maps stream ID → file name). MQTT is notable for having the closest thing to "file names" as a first-class protocol concept via topic strings.
 
 #### TAR-based interleaving workaround
 
@@ -1346,23 +1502,23 @@ At 4 KiB payload chunks, TAR member overhead is ~12.5% (512-byte header per 4096
 
 Placing all requirements together:
 
-| Requirement | TAR (interleaved hack) | Ogg | HTTP/2 framing | SCTP | 9P | Custom LTV | Matroska |
-|---|---|---|---|---|---|---|---|
-| Streaming (no patching) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ Conditional |
-| Interleaving | ✅ (via naming convention) | ✅ Native | ✅ Native | ✅ Native | ✅ Tag-based | ✅ By design | ✅ Native |
-| File names | ✅ Native (paths in headers) | ❌ Numeric IDs | ⚠️ Via HTTP headers | ❌ Numeric IDs | ✅ File paths | ✅ If designed in | ✅ Track names |
-| 7z extractable | ✅ `7z l file.tar` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Tombstone (end marker) | ✅ Two zero blocks | ✅ EOS flag (per-stream) | ✅ END_STREAM (per-stream) | ✅ SHUTDOWN | ⚠️ Tclunk per fid | ✅ If designed in | ❌ None |
-| Low overhead | ❌ (~0.8–12.5%) | ✅ (~0.5–1%) | ✅ (~0.05%) | ✅ (~0.01%) | ⚠️ Request/response | ✅ (~0.01%) | ✅ (~0.1–1%) |
-| No full protocol stack required | ✅ | ✅ | ❌ (HPACK, flow ctrl) | ❌ (kernel stack) | ❌ (file ops FSM) | ✅ | ✅ |
+| Requirement | TAR (interleaved hack) | Ogg | HTTP/2 framing | SCTP | 9P | gRPC | AMQP 1.0 | Custom LTV | Matroska |
+|---|---|---|---|---|---|---|---|---|---|
+| Streaming (no patching) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ Conditional |
+| Interleaving | ✅ (via naming convention) | ✅ Native | ✅ Native | ✅ Native | ✅ Tag-based | ✅ Via HTTP/2 | ✅ Native | ✅ By design | ✅ Native |
+| File names | ✅ Native (paths in headers) | ❌ Numeric IDs | ⚠️ Via HTTP headers | ❌ Numeric IDs | ✅ File paths | ⚠️ Method paths | ✅ Link names | ✅ If designed in | ✅ Track names |
+| 7z extractable | ✅ `7z l file.tar` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Tombstone (end marker) | ✅ Two zero blocks | ✅ EOS flag (per-stream) | ✅ END_STREAM (per-stream) | ✅ SHUTDOWN | ⚠️ Tclunk per fid | ✅ Trailers (per-RPC) | ✅ Detach (per-link) | ✅ If designed in | ❌ None |
+| Low overhead | ❌ (~0.8–12.5%) | ✅ (~0.5–1%) | ✅ (~0.05%) | ✅ (~0.01%) | ⚠️ Request/response | ❌ (~0.1%+) | ❌ (~0.5%+) | ✅ (~0.01%) | ✅ (~0.1–1%) |
+| No full protocol stack required | ✅ | ✅ | ❌ (HPACK, flow ctrl) | ❌ (kernel stack) | ❌ (file ops FSM) | ❌ (HTTP/2 + gRPC runtime) | ❌ (SASL, flow ctrl, settlement) | ✅ | ✅ |
 
-**Core trade-off**: TAR is the **only** format that is simultaneously 7z-extractable, streaming-writable, can carry file names, has a container-level tombstone, and requires no protocol stack beyond simple file I/O. It achieves "interleaving" through a naming convention (each chunk is a separate TAR member), with significant overhead vs custom LTV. Every native multiplexing format (Ogg, HTTP/2, QUIC, SCTP, NUT, 9P) fails the 7z extractability test. Transport protocols (SCTP, QUIC, HTTP/2, SSH) additionally require protocol stacks inappropriate for local pipe use.
+**Core trade-off**: TAR is the **only** format that is simultaneously 7z-extractable, streaming-writable, can carry file names, has a container-level tombstone, and requires no protocol stack beyond simple file I/O. It achieves "interleaving" through a naming convention (each chunk is a separate TAR member), with significant overhead vs custom LTV. Every native multiplexing format (Ogg, HTTP/2, QUIC, SCTP, NUT, 9P, gRPC, AMQP) fails the 7z extractability test. Transport protocols and RPC frameworks (SCTP, QUIC, HTTP/2, SSH, gRPC, AMQP) additionally require protocol stacks inappropriate for local pipe use.
 
 **Practical conclusion**: **TAR with interleaved chunk members is the strongest candidate** when 7z extractability and file names are hard requirements. It satisfies streaming (no patching), interleaving (via naming convention), file names (native), 7z extractability, and truncation detection (two zero blocks as tombstone). The trade-offs are overhead (~0.8–12.5% depending on chunk size) and the need for a reassembly tool to reconstruct per-stream files from chunks. If 7z extractability can be relaxed (e.g., a dedicated `mux` tool is acceptable), then a custom LTV format remains the lowest-overhead option.
 
 ### Current status and practical recommendation
 
-After evaluating 39 formats across archives, multimedia containers, transport protocols, and custom framing options, the research concludes that **no existing format fully satisfies all requirements** (streaming without patching + native interleaving + file names + 7z extractability + tombstone). The gap between what exists and what is needed is the core finding.
+After evaluating 45 formats across archives, multimedia containers, transport protocols, messaging systems, data formats, and custom framing options, the research concludes that **no existing format fully satisfies all requirements** (streaming without patching + native interleaving + file names + 7z extractability + tombstone). The gap between what exists and what is needed is the core finding.
 
 **For immediate practical use**, the **higher-FD (3+) approach** is the most viable path: tools like GPG (`--status-fd`), bubblewrap (`--json-status-fd`), and apt (`APT::Status-Fd`) demonstrate that multi-FD output works reliably for single-hop producer→consumer scenarios. FDs 3–9 are portable across all POSIX shells (bash, zsh, ksh, dash); FDs ≥10 work in bash/zsh/ksh but are silently misparsed by dash. This approach has zero framing overhead, zero latency, and requires no format parsing — but it does not compose across pipeline stages and is not portable to Windows or Nushell.
 
@@ -1402,6 +1558,10 @@ A practical concern when choosing a multi-stream container for CLI pipes is **fr
 | **CBOR sequences** | 1–9 bytes (type + length encoding) | Variable | < 0.01% at large items | Self-delimiting; no explicit length prefix for known types |
 | **Cap'n Proto** | 8+ bytes (segment table) | Variable | ~0.01% at large segments | Zero-copy design; segment-based framing |
 | **TAR (chunk hack)** | 512 bytes (member header) | Variable | ~0.8% at 64 KiB, ~12.5% at 4 KiB | Fixed 512-byte header per chunk; 512-byte alignment padding |
+| **gRPC** | 5 bytes (1 compress flag + 4 length) + HTTP/2 9 bytes | Variable | ~0.02% at 64 KiB (gRPC framing only) | gRPC adds 5 bytes per message on top of HTTP/2 framing; total overhead depends on HTTP/2 frame size |
+| **AMQP 1.0** | ~50+ bytes (transfer performative) | Variable | ~0.08% at 64 KiB | Transfer frame includes delivery ID, message format, settled flag; significant per-message overhead |
+| **MQTT 5.0** | 2–5 bytes (fixed header) + topic length | Variable | ~0.05% at 64 KiB | Compact variable-byte-integer length; topic string adds per-message overhead |
+| **NDJSON** | 0 bytes (no framing) | Variable | ~0% (pure payload) | No framing overhead; but no stream ID, no length prefix — newline-delimited only |
 
 **Key takeaway**: Custom LTV framing has the lowest overhead for high-throughput CLI pipes. Ogg and MPEG-TS add meaningful overhead but provide checksums (Ogg) or sync recovery (MPEG-TS) which matter for unreliable channels. For reliable UNIX pipes, the extra error-resilience features are less valuable, making LTV or Ogg the pragmatic choices.
 
@@ -1543,3 +1703,11 @@ This makes the **LTV custom framing** approach even more attractive: its 8-byte 
 - [D-Bus Specification](https://dbus.freedesktop.org/doc/dbus-specification.html)
 - [9P Protocol — Plan 9 Manual](http://man.cat-v.org/plan_9/5/intro)
 - [Cap'n Proto RPC Protocol](https://capnproto.org/rpc.html)
+- [JSON Lines / NDJSON specification](https://jsonlines.org/)
+- [RFC 7464 — JavaScript Object Notation (JSON) Text Sequences](https://www.rfc-editor.org/rfc/rfc7464)
+- [MessagePack specification](https://msgpack.org/)
+- [Apache Parquet Format Specification](https://parquet.apache.org/documentation/latest/)
+- [gRPC Core Concepts](https://grpc.io/docs/what-is-grpc/core-concepts/)
+- [gRPC over HTTP/2 (gRPC wire format)](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md)
+- [AMQP 1.0 Specification (OASIS / ISO 19464)](https://www.amqp.org/specification/1.0/amqp-org-download)
+- [MQTT 5.0 Specification (OASIS)](https://docs.oasis-open.org/mqtt/mqtt/v5.0/mqtt-v5.0.html)
