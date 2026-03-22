@@ -1065,7 +1065,12 @@ There is no established convention for "FD 3 = metadata" or "FD 4 = progress." E
 | Named pipes (FIFO) | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ❌ | ❌ |
 
 - **Nushell** deliberately omits higher-FD support — cross-platform design (Windows uses HANDLEs, not integer FDs). See [nushell/nushell#15650](https://github.com/nushell/nushell/issues/15650).
-- **Windows** has no integer FD concept at the shell level. Tools using `--status-fd 3` require a POSIX emulation layer (MSYS2, Cygwin, WSL).
+- **Windows FD 3+ support** — a layered picture:
+  - **Kernel/Win32 API**: Windows uses **HANDLEs** (opaque pointers), not integer FDs. I/O is done via `CreateFile()`, `ReadFile()`, `WriteFile()` etc. There are no FDs 0, 1, 2 — instead, `GetStdHandle(STD_INPUT_HANDLE)` / `STD_OUTPUT_HANDLE` / `STD_ERROR_HANDLE` return the three standard handles.
+  - **C Runtime (CRT)**: The MSVC/UCRT provides a POSIX-like FD layer via `_open()`, `_read()`, `_write()`, `_pipe()`, `_dup2()`. These functions maintain an internal table mapping integer FDs (0, 1, 2, 3, …) to underlying HANDLEs. So **C/C++ code CAN use FD 3+ on Windows** through CRT functions — `_pipe()` creates a pair of FDs, `_dup2()` can assign them to specific numbers. However, this is a CRT-internal abstraction, not a system-wide concept.
+  - **Child process inheritance**: `CreateProcess()` passes exactly 3 handles to the child via `STARTUPINFO` (`hStdInput`, `hStdOutput`, `hStdError`). There is no built-in mechanism for "FD 3." Since Vista, `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` can pass arbitrary extra HANDLEs, but the child must know which HANDLEs to use (typically communicated via environment variables or command-line arguments with the numeric HANDLE value — not integer FDs).
+  - **Shell level**: `cmd.exe` supports only `<`, `>`, `>>`, `2>`, `2>&1` — no arbitrary FD redirection. PowerShell uses .NET streams, not integer FDs. There is **no shell-level way to redirect FD 3+** on Windows.
+  - **Bottom line**: Windows has FD 3+ only as a CRT-internal abstraction. The GPG/bubblewrap `--status-fd 3` pattern requires either a POSIX emulation layer (MSYS2, Cygwin, WSL) or custom C code using `_pipe()` + `_dup2()` in the parent process. There is no Windows shell equivalent of `cmd 3>/dev/fd/3`.
 - **Process substitution** (`>(cmd)`) only works in bash, zsh, and ksh — not in POSIX sh, fish, or Nushell.
 
 #### Higher-FD redirection syntax: which FD numbers actually work?
