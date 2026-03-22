@@ -58,6 +58,8 @@ Evaluate existing archive and container formats against the following criteria:
 | CAF | 2005 | ★★☆☆☆ | ✅ Yes (size -1 = unknown) | ✅ Yes | ✅ Audio tracks | ✅ Yes — in spec |
 | HTTP/2 framing | 2015 | ★★★★★ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec (RFC 7540) |
 | SSH channels | 1995 | ★★★★★ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec (RFC 4254) |
+| HTTP/1.1 chunked | 1997 | ★★★★★ | ✅ Yes | ✅ Yes | ❌ None known | ⚠️ Possible via chunk extensions (RFC 7230 §4.1.1) |
+| MIME multipart | 1996 | ★★★★★ | ✅ Yes | ✅ Yes | ❌ None known | ❌ Parts are sequential, not interleaved |
 | Framing (custom) | — | N/A | ✅ Yes | ✅ Yes | ✅ By design | ✅ By design |
 
 ---
@@ -338,6 +340,52 @@ Evaluate existing archive and container formats against the following criteria:
 
 ---
 
+#### HTTP/1.1 Response Format (RFC 7230 — Chunked Encoding + Multipart)
+
+**Popularity**: ★★★★★ — HTTP/1.1 is arguably the most universally implemented application protocol in history. Every programming language, every OS, every networked device supports it. The chunked transfer encoding and MIME multipart mechanisms are understood by billions of deployed clients and servers.
+
+**Format overview**: HTTP/1.1 offers two mechanisms potentially relevant to multi-stream piping:
+
+1. **Chunked Transfer Encoding** (RFC 7230 §4.1): Allows streaming a response body of unknown length. Each chunk is framed as `<hex-length>\r\n<data>\r\n`, terminated by a zero-length chunk. This is a single-stream framing mechanism — it solves the "unknown total size" problem but does **not** natively multiplex multiple streams.
+
+2. **MIME Multipart responses** (RFC 2046 / used in HTTP as `multipart/mixed`, `multipart/byteranges`): Allows a single HTTP response to contain multiple body parts separated by a boundary string. Each part has its own headers (`Content-Type`, `Content-Range`, etc.) and body. However, parts are **sequential** — each part must be complete before the next boundary and next part begin.
+
+**Chunked encoding with chunk extensions for multiplexing**: RFC 7230 §4.1.1 defines **chunk extensions** — semicolon-delimited key-value pairs appended to the chunk size line:
+```
+1a;stream=0\r\n
+<26 bytes of data for stream 0>\r\n
+2f;stream=1\r\n
+<47 bytes of data for stream 1>\r\n
+0\r\n
+\r\n
+```
+This is syntactically valid HTTP/1.1. Existing HTTP clients/proxies would parse the chunks correctly (they are required to accept and may ignore unknown extensions per the RFC). In theory, a multiplexer could tag each chunk with a stream identifier, and a custom demultiplexer could reconstruct the original streams.
+
+**Sequential-write streaming**: ✅ Fully supported — no patching needed. Chunked encoding was designed specifically for forward-only streaming of unknown-length content.
+
+**Sequential-read streaming**: ✅ Fully supported. Chunks are self-delimiting and parseable in a single forward pass.
+
+**Chunk interleaving (implementations)**: ❌ No known implementation uses chunk extensions for stream multiplexing. All existing HTTP/1.1 usage treats chunked encoding as a single-stream framing. MIME multipart responses are sequential (one part at a time), not interleaved.
+
+**Chunk interleaving (theoretical)**: ⚠️ Partially possible. Chunk extensions could carry stream IDs, making interleaved multiplexing syntactically valid per RFC 7230. However:
+- The RFC says recipients "MUST ignore chunk extensions they do not understand" — so existing clients would silently flatten the multiplexed stream into one concatenated byte sequence.
+- MIME `multipart/mixed` boundaries delimit **complete sequential parts**, not interleaved chunks. There is no standard way to interleave parts.
+- `multipart/x-mixed-replace` (used in MJPEG) replaces the previous part with the current one — this is sequential replacement, not multiplexing.
+
+**Overhead analysis**:
+- Chunked encoding per chunk: hex-length (1–8 chars) + `;stream=N` (~10 chars) + `\r\n` (2 bytes) + data + `\r\n` (2 bytes) = ~15–22 bytes overhead per chunk. At 64 KiB payloads: ~0.03%.
+- MIME multipart per part: boundary line (~30–70 bytes) + part headers (~50–100 bytes) + `\r\n` separators = ~100–200 bytes per part. But parts are sequential, not interleaved chunks.
+
+**Conclusion for multi-stream use**: HTTP/1.1's chunked encoding is an excellent **single-stream** streaming format — well-specified, universally implemented, low overhead. However, it was not designed for multi-stream multiplexing. The chunk-extension hack for stream tagging is theoretically valid but:
+- No existing implementation supports it for multiplexing.
+- Existing HTTP infrastructure (proxies, CDNs, clients) would not preserve stream semantics — they would concatenate all chunks into one stream.
+- MIME multipart is inherently sequential, not interleaved.
+- HTTP/2 was invented precisely because HTTP/1.1 lacked native multiplexing — this confirms the limitation is fundamental to the 1.1 design.
+
+HTTP/1.1 chunked encoding is valuable **as prior art for framing design** (hex-length prefix, chunk extensions, trailer headers) and demonstrates that the "streaming a single unknown-length body" problem is well-solved. But for multi-stream interleaving, HTTP/2's framing layer is the relevant evolution.
+
+---
+
 #### Custom / Generic Framing Formats
 
 When no existing format is suitable, a lightweight framing protocol can be designed. Several well-known examples exist:
@@ -345,7 +393,8 @@ When no existing format is suitable, a lightweight framing protocol can be desig
 | Framing | Description | Streaming | Interleaving |
 |---|---|---|---|
 | **Netstring** | `len:data,` — trivially parseable | ✅ | ✅ (with stream tag in data) |
-| **MIME multipart** | `--boundary\r\nContent-*\r\n\r\ndata` | ✅ | ❌ (boundaries require full parts) |
+| **MIME multipart** | `--boundary\r\nContent-*\r\n\r\ndata` | ✅ | ❌ (parts are sequential, not interleaved) |
+| **HTTP/1.1 chunked** | hex-length + `\r\n` + data + `\r\n` | ✅ | ⚠️ (chunk extensions could carry stream IDs; no implementations) |
 | **HTTP/2 framing** | 9-byte frame header with stream ID | ✅ | ✅ Native |
 | **MessagePack** | Self-delimiting binary encoding | ✅ | ✅ (with envelope) |
 | **CBOR sequences** (RFC 7049 / RFC 8742) | Self-delimiting binary encoding | ✅ | ✅ (with envelope) |
@@ -473,14 +522,17 @@ The strongest requirement is a format that is **not multimedia-specific** — on
 |---|---|---|---|---|---|
 | 1 | **Ogg** | 2003 | ★★★☆☆ | ✅ By spec (RFC 3533) | Spec defines "general-purpose bitstream encapsulation"; multimedia association is by convention only |
 | 2 | **HTTP/2 framing** | 2015 | ★★★★★ | ✅ By design | Stream multiplexer for arbitrary data; but carries protocol complexity beyond just framing |
-| 3 | **SSH channels** | 1995 | ★★★★★ | ✅ By design | Proven channel multiplexing; but encryption/key-exchange overhead is unnecessary for local pipes |
-| 4 | **Custom LTV** | — | N/A | ✅ By definition | Zero legacy baggage; trivial to implement; but no established standard/tooling |
+| 3 | **HTTP/1.1 chunked** | 1997 | ★★★★★ | ✅ By design | Excellent single-stream framing; chunk extensions allow stream tagging in theory but no implementations exist |
+| 4 | **SSH channels** | 1995 | ★★★★★ | ✅ By design | Proven channel multiplexing; but encryption/key-exchange overhead is unnecessary for local pipes |
+| 5 | **Custom LTV** | — | N/A | ✅ By definition | Zero legacy baggage; trivial to implement; but no established standard/tooling |
 
 **Ogg** (RFC 3533, 2003) is the **best general-purpose candidate among established formats**. Despite its reputation as "the Vorbis/Opus container," RFC 3533 is explicitly a general-purpose bitstream encapsulation format — it defines pages, stream serial numbers, and granule positions with no multimedia-specific semantics. An Ogg stream carrying arbitrary tagged data chunks is fully compliant. It has IETF standardization, clean implementations (`libogg` in C, crates in Rust, packages in Python/Go), and ~0.5–1% framing overhead with CRC-32 integrity. The only real limitation is that **existing tooling assumes multimedia content** — a general-purpose multiplexer would need a thin wrapper or a clean-room page writer (the page format is simple: 27-byte header + segment table + data).
 
 **HTTP/2 framing** (RFC 7540, 2015) is the most widely deployed general-purpose multiplexing format in the world, with universal browser/server/CDN support. Its 9-byte frame header with 31-bit stream ID is exactly the "stream N, chunk M" primitive needed. However, extracting just the framing layer from HTTP/2 means ignoring most of the spec (HPACK, flow control, SETTINGS, stream priorities) — it would be using ~5% of a complex protocol. Suitable as prior art / inspiration rather than direct reuse.
 
 **SSH channels** (RFC 4254, since ~1995) are the oldest general-purpose multiplexing mechanism still in universal production use. However, the encryption and connection-setup overhead makes it impractical for local pipe multiplexing.
+
+**HTTP/1.1 chunked encoding** (RFC 7230, 1997) deserves special mention as the most universally deployed streaming framing format. Its chunked transfer encoding solves the single-stream "unknown length" problem perfectly, and chunk extensions (§4.1.1) could theoretically carry stream IDs for multiplexing. However, no implementation uses chunk extensions this way, and the HTTP/1.1 ecosystem (proxies, CDNs, clients) would silently flatten multiplexed chunks into a single concatenated stream. MIME `multipart/mixed` adds multi-part capability but parts are sequential, not interleaved — this fundamental limitation is precisely why HTTP/2 was created. HTTP/1.1 chunked encoding is excellent **prior art for single-stream framing design** but does not solve the interleaving problem.
 
 ### Multimedia formats that also qualify
 
@@ -510,12 +562,13 @@ These are proven and well-tooled but carry multimedia-specific framing (PIDs, PA
 - **ZIP** — Central Directory at end breaks streaming read.
 - **7-Zip** — headers at end, no streaming.
 - **RAR** — proprietary, no interleaving.
+- **HTTP/1.1 chunked** — excellent single-stream streaming; but no native multiplexing (chunk extensions hack is theoretical only).
 - **ASF** — Microsoft proprietary, needs file-size in header.
 - **CAF** — Apple-only, audio-specific.
 
 ### Open questions / TBD
 
-- TBD: Feasibility of a new minimal open spec designed specifically for general-purpose multi-stream CLI piping (working name: "mux"). HTTP/2's 9-byte frame header and Ogg's page structure are the strongest prior art to draw from.
+- TBD: Feasibility of a new minimal open spec designed specifically for general-purpose multi-stream CLI piping (working name: "mux"). HTTP/2's 9-byte frame header, Ogg's page structure, and HTTP/1.1's chunked encoding (hex-length + extensions) are the strongest prior art to draw from.
 
 ---
 
@@ -529,6 +582,7 @@ A practical concern when choosing a multi-stream container for CLI pipes is **fr
 | **Ogg** | 27–282 bytes (27 fixed + 0–255 segment table) | Up to 65,025 bytes (255 × 255) | ~0.5–1% typical | Includes CRC-32 checksum; variable page size; segment table adds 1 byte per 255-byte segment |
 | **MPEG-TS** | 4 bytes | 184 bytes (fixed) | ~2.13% | Fixed 188-byte packets; includes sync byte for error recovery; adaptation field may reduce payload further |
 | **HTTP/2 framing** | 9 bytes | Up to 16,384 bytes (default) | ~0.05% at max frame | Well-defined; stream ID native; but designed for TCP, not pipes |
+| **HTTP/1.1 chunked** | ~15–22 bytes (hex-len + `;stream=N` + CRLFs) | Variable (any size) | ~0.03% at 64 KiB chunks | Stream tagging via chunk extensions adds ~10 bytes; universally parseable |
 | **Netstring** | ~5–10 bytes (`len:...,`) | Variable | < 0.01% at large sizes | ASCII length prefix; simple but no stream ID built in |
 
 **Key takeaway**: Custom LTV framing has the lowest overhead for high-throughput CLI pipes. Ogg and MPEG-TS add meaningful overhead but provide checksums (Ogg) or sync recovery (MPEG-TS) which matter for unreliable channels. For reliable UNIX pipes, the extra error-resilience features are less valuable, making LTV or Ogg the pragmatic choices.
@@ -656,3 +710,7 @@ This makes the **LTV custom framing** approach even more attractive: its 8-byte 
 - [splice(2) — Linux man page](https://www.man7.org/linux/man-pages/man2/splice.2.html)
 - [vmsplice(2) — Linux man page](https://www.man7.org/linux/man-pages/man2/vmsplice.2.html)
 - [GNU Parallel Tutorial](https://www.gnu.org/software/parallel/parallel_tutorial.html)
+- [RFC 7230 — HTTP/1.1 Message Syntax and Routing (Chunked Transfer Coding)](https://www.rfc-editor.org/rfc/rfc7230#section-4.1)
+- [RFC 7540 — Hypertext Transfer Protocol Version 2 (HTTP/2)](https://www.rfc-editor.org/rfc/rfc7540)
+- [RFC 4254 — The Secure Shell (SSH) Connection Protocol](https://www.rfc-editor.org/rfc/rfc4254)
+- [RFC 2046 — MIME Part Two: Media Types (Multipart)](https://www.rfc-editor.org/rfc/rfc2046#section-5.1)
