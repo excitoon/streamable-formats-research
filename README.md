@@ -1004,17 +1004,43 @@ For multi-stream pipe use, each logical stream should be identifiable by a **nam
 
 #### TAR-based interleaving workaround
 
-Given the requirement for 7z extractability + file names, a **TAR-based approach** deserves reconsideration despite its sequential nature. The idea (detailed in Appendix C) is to write interleaved chunks as individual TAR members with a naming convention:
+Given the requirement for 7z extractability + file names, a **TAR-based approach** deserves reconsideration despite its sequential nature.
+
+**The core idea**: TAR is a sequential format — normally you write file A completely, then file B completely. But nothing stops you from writing _many small files_ instead, where each small file is a _chunk_ of a logical stream. By using a naming convention like `.streams/<stream-name>/chunk-NNNNNN`, a writer can alternate between streams at chunk boundaries, and a reader (demuxer) can reconstruct the original streams by concatenating chunks with the same stream name.
+
+**Worked example** — suppose a CLI tool produces two outputs simultaneously: `output.csv` (large, generated incrementally) and `metadata.json` (small, generated alongside). Instead of writing one complete file after another, the writer emits them as interleaved TAR members:
 
 ```
-.streams/output.csv/chunk-000001      (4096 bytes of output.csv data)
-.streams/metadata.json/chunk-000001   (512 bytes of metadata.json data)
-.streams/output.csv/chunk-000002      (4096 bytes of output.csv data)
-...
+┌─────────────────────────────────────────────────────────────────────────┐
+│ TAR member 1:  .streams/output.csv/chunk-000001     [512-byte header]  │
+│                  ← 4096 bytes of output.csv data (rows 1–100) →        │
+├─────────────────────────────────────────────────────────────────────────┤
+│ TAR member 2:  .streams/metadata.json/chunk-000001  [512-byte header]  │
+│                  ← 128 bytes of metadata.json data →                   │
+├─────────────────────────────────────────────────────────────────────────┤
+│ TAR member 3:  .streams/output.csv/chunk-000002     [512-byte header]  │
+│                  ← 4096 bytes of output.csv data (rows 101–200) →      │
+├─────────────────────────────────────────────────────────────────────────┤
+│ TAR member 4:  .streams/metadata.json/chunk-000002  [512-byte header]  │
+│                  ← 256 bytes of metadata.json data →                   │
+├─────────────────────────────────────────────────────────────────────────┤
+│ ... more interleaved chunks ...                                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│ TAR end-of-archive: two 512-byte zero blocks (tombstone)               │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Pros**: `7z l file.tar` works, file names are visible, any TAR tool can extract, streaming write (no patching).
-**Cons**: ~512 bytes overhead per chunk (TAR header per member), reassembly required (chunks must be concatenated by stream name), not true multiplexing — it's a hack on a sequential format.
+**What the reader/demuxer does**: read TAR members one by one, group chunks by stream name (`.streams/output.csv/*` vs `.streams/metadata.json/*`), concatenate each group's payloads in order → reconstructed `output.csv` and `metadata.json`. Both streams are available incrementally as data arrives — the reader doesn't need to wait for all of `output.csv` before seeing `metadata.json` data.
+
+**What existing tools see**:
+- `tar -t` lists all chunks as individual files — not pretty, but works
+- `7z l file.tar` lists them too — 7z extractability preserved
+- `tar -x` extracts thousands of small chunk files — a reassembly step is needed afterward (e.g., `cat .streams/output.csv/chunk-* > output.csv`)
+
+**Why it works for streaming**: each TAR member header contains the chunk's size upfront (known at write time since the writer chooses the chunk size), so no seeking/patching is needed. The writer appends header+data for each chunk in a single forward pass. The two zero blocks at the end serve as a tombstone — if they're missing, the stream was truncated.
+
+**Pros**: `7z l file.tar` works, file names are visible, any TAR tool can extract, streaming write (no patching), container-level tombstone (two zero blocks).
+**Cons**: ~512 bytes overhead per chunk (TAR header per member), reassembly required (chunks must be concatenated by stream name), not true multiplexing — it's a convention on top of a sequential format.
 
 At 4 KiB payload chunks, TAR member overhead is ~12.5% (512-byte header per 4096-byte payload). At 64 KiB chunks, overhead drops to ~0.8% — still 80× higher than custom LTV framing.
 
