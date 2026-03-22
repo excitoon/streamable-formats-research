@@ -74,7 +74,70 @@ Evaluate existing archive and container formats against the following criteria:
 | Protobuf (delimited) | 2008 | ★★★★☆ | ✅ Yes | ✅ Yes | ❌ None known | ⚠️ Possible with field tags |
 | QUIC | 2021 | ★★★★☆ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec (RFC 9000) |
 | LHA / LZH | 1988 | ★★☆☆☆ | ✅ Yes | ✅ Yes | ❌ None known | ❌ Not in spec |
+| SCTP | 2000 | ★★★☆☆ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec (RFC 4960) |
+| WebSocket | 2011 | ★★★★★ | ✅ Yes | ✅ Yes | ❌ None (single channel) | ❌ Not in spec (mux extension expired) |
+| D-Bus | 2006 | ★★★★☆ | ✅ Yes | ✅ Yes | ⚠️ Bus-level routing (not wire-level) | ⚠️ Application-level only |
+| 9P | 1995 | ★★☆☆☆ | ✅ Yes | ✅ Yes | ✅ Native (tag-based) | ✅ Yes — in spec |
+| Cap'n Proto RPC | 2013 | ★★☆☆☆ | ✅ Yes | ✅ Yes | ✅ Native (question IDs) | ✅ Yes — in spec |
+| CBOR sequences | 2020 | ★★★☆☆ | ✅ Yes | ✅ Yes | ❌ None known | ⚠️ Possible with convention |
 | Framing (custom) | — | N/A | ✅ Yes | ✅ Yes | ✅ By design | ✅ By design |
+
+---
+
+### Master Comparison Table
+
+All 39 formats evaluated across every key criterion in a single table. This consolidates the summary table, general-purpose candidates, 7z extractability, stream naming, tombstone markers, and wire format into one reference:
+
+| Format | Year | Popularity | Write-stream (no patch) | Interleaving | 7z extract | File names | Tombstone | Wire format | Category |
+|---|---|---|---|---|---|---|---|---|---|
+| **TAR** | 1979 | ★★★★★ | ✅ | ❌ Native; ✅ via chunk hack | ✅ | ✅ Full paths | ✅ Two zero blocks | Binary | Archive |
+| **CPIO** | 1977 | ★★★☆☆ | ✅ | ❌ | ✅ | ✅ Full paths | ✅ `TRAILER!!!` | Binary | Archive |
+| **ar** | 1971 | ★★☆☆☆ | ✅ | ❌ | ✅ | ✅ Short names | ❌ None | Binary | Archive |
+| **ZIP** | 1989 | ★★★★★ | ⚠️ Data descriptors | ❌ | ✅ | ✅ Full paths | ✅ EOCD | Binary | Archive |
+| **7-Zip** | 1999 | ★★★★☆ | ❌ Patching | ❌ | ✅ | ✅ Full paths | ✅ EndHeader | Binary | Archive |
+| **RAR** | 1993 | ★★★☆☆ | ⚠️ Partial | ❌ | ✅ | ✅ Full paths | ✅ HEAD_ENDER | Binary | Archive |
+| **ISO 9660** | 1988 | ★★★★☆ | ❌ Pre-computed | ❌ | ✅ | ✅ Full paths | ✅ VD Terminator | Binary | Archive |
+| **WIM** | 2006 | ★★★☆☆ | ❌ Patching | ❌ | ✅ | ✅ Full paths | ⚠️ Header checksum | Binary | Archive |
+| **CAB** | 1997 | ★★★☆☆ | ❌ Pre-computed | ❌ | ✅ | ✅ Full paths | ✅ Declared size | Binary | Archive |
+| **XAR** | 2007 | ★★☆☆☆ | ❌ Pre-computed | ❌ | ✅ | ✅ Full paths | ⚠️ TOC sizes | Binary | Archive |
+| **LHA/LZH** | 1988 | ★★☆☆☆ | ✅ | ❌ | ✅ | ✅ Full paths | ✅ Zero sentinel | Binary | Archive |
+| **Ogg** | 2003 | ★★★☆☆ | ✅ | ✅ Native | ❌ | ❌ Numeric IDs | ✅ EOS flag/stream | Binary | Container |
+| **Matroska/MKV** | 2002 | ★★★★☆ | ⚠️ Conditional | ✅ Native | ❌ | ✅ Track names | ⚠️ None standard | Binary | Multimedia |
+| **WebM** | 2010 | ★★★☆☆ | ⚠️ Conditional | ✅ Native | ❌ | ✅ Track names | ⚠️ None standard | Binary | Multimedia |
+| **MPEG-TS** | 1995 | ★★★★☆ | ✅ | ✅ Native | ❌ | ❌ PID numbers | ❌ None (broadcast) | Binary | Multimedia |
+| **MPEG-PS** | 1993 | ★★★☆☆ | ✅ | ✅ Native | ❌ | ❌ Stream IDs | ✅ End code | Binary | Multimedia |
+| **ASF** | 1996 | ★★★☆☆ | ⚠️ Sentinel values | ✅ Native | ❌ | ❌ Stream numbers | ⚠️ Packet count | Binary | Multimedia |
+| **CAF** | 2005 | ★★☆☆☆ | ✅ | ✅ Tracks | ❌ | ❌ Track indices | ⚠️ Ambiguous | Binary | Multimedia |
+| **MP4/fMP4** | 2001 | ★★★★★ | ⚠️ fMP4 only | ✅ Native | ❌ | ❌ Track IDs | ⚠️ Optional | Binary | Multimedia |
+| **AVI/RIFF** | 1992 | ★★★★☆ | ❌ Size in header | ✅ Native | ❌ | ❌ FourCC tags | ⚠️ Size mismatch | Binary | Multimedia |
+| **IFF** | 1985 | ★★☆☆☆ | ⚠️ Sizes upfront | ❌ | ❌ | ❌ Type codes | ⚠️ Size mismatch | Binary | Container |
+| **FLV** | 2002 | ★★★☆☆ | ✅ | ✅ Native | ❌ | ❌ Tag types | ❌ None (EOF) | Binary | Multimedia |
+| **NUT** | 2003 | ★☆☆☆☆ | ✅ | ✅ Native | ❌ | ⚠️ Metadata | ✅ EOR/stream | Binary | Multimedia |
+| **WARC** | 2009 | ★★★☆☆ | ✅ | ❌ | ❌ | ✅ WARC-Target-URI | ⚠️ Content-Length | Text+Binary | Data |
+| **Avro OCF** | 2009 | ★★★☆☆ | ✅ | ❌ | ❌ | ❌ Schema only | ⚠️ Sync markers | Binary | Data |
+| **Protobuf delimited** | 2008 | ★★★★☆ | ✅ | ❌ Standard | ❌ | ❌ Field tags | ❌ None (EOF) | Binary | Data |
+| **HTTP/2 framing** | 2015 | ★★★★★ | ✅ | ✅ Native | ❌ | ⚠️ Via headers | ✅ END_STREAM/stream | Binary | Protocol |
+| **SSH channels** | 1995 | ★★★★★ | ✅ | ✅ Native | ❌ | ⚠️ Channel type | ✅ CLOSE/channel | Binary | Protocol |
+| **HTTP/1.1 chunked** | 1997 | ★★★★★ | ✅ | ❌ | ❌ | ❌ N/A | ✅ Zero-length chunk | Text | Protocol |
+| **MIME multipart** | 1996 | ★★★★★ | ✅ | ❌ | ❌ | ⚠️ Content-Disposition | ✅ Close boundary | Text | Protocol |
+| **QUIC** | 2021 | ★★★★☆ | ✅ | ✅ Native | ❌ | ❌ Numeric IDs | ✅ FIN bit/stream | Binary | Protocol |
+| **SCTP** | 2000 | ★★★☆☆ | ✅ | ✅ Native | ❌ | ❌ Numeric IDs | ✅ SHUTDOWN | Binary | Protocol |
+| **WebSocket** | 2011 | ★★★★★ | ✅ | ❌ | ❌ | ❌ N/A | ✅ Close frame | Binary | Protocol |
+| **D-Bus** | 2006 | ★★★★☆ | ✅ | ⚠️ Bus-level | ❌ | ⚠️ Object paths | ❌ None | Binary | IPC |
+| **9P** | 1995 | ★★☆☆☆ | ✅ | ✅ Tag-based | ❌ | ✅ File paths | ⚠️ Tclunk per fid | Binary | Protocol |
+| **Cap'n Proto RPC** | 2013 | ★★☆☆☆ | ✅ | ✅ Question IDs | ❌ | ❌ Question IDs | ✅ Per-question | Binary | RPC |
+| **CBOR sequences** | 2020 | ★★★☆☆ | ✅ | ❌ Standard | ❌ | ❌ N/A | ❌ None (EOF) | Binary | Data |
+| **Custom LTV** | — | N/A | ✅ | ✅ By design | ❌ | ✅ If designed in | ✅ If designed in | Binary | Custom |
+
+**Reading this table**: ✅ = fully supported, ⚠️ = conditional/partial, ❌ = not supported. "Interleaving" means native concurrent multi-stream interleaving. "7z extract" means `7z l file.ext` works. "Tombstone" means clean finalization detection (container-level or per-stream). The "via chunk hack" note on TAR refers to the interleaving workaround described below.
+
+**Key observations from the unified view**:
+- **11 formats are 7z-extractable** — all archives, **none** with native interleaving
+- **16 formats support native interleaving** — none are 7z-extractable
+- **TAR (with chunk hack)** is the **only** entry that spans both columns — 7z-extractable AND interleaving (via naming convention)
+- All multiplexing protocols (HTTP/2, QUIC, SCTP, SSH) use **numeric stream IDs** — file names require application-level mapping
+- **WebSocket** is the highest-popularity format that explicitly lacks multiplexing — confirming that single-stream framing ≠ multiplexing
+- Every format is **binary** except HTTP/1.1 chunked (text), MIME multipart (text), and WARC (hybrid)
 
 ---
 
@@ -92,9 +155,16 @@ Evaluate existing archive and container formats against the following criteria:
 
 **Chunk interleaving (implementations)**: ❌ None known. All standard TAR implementations (`GNU tar`, `bsdtar`, `libarchive`) write each member file completely (header + all data blocks) before starting the next member. There is no mechanism to pause in the middle of a member's data and insert data for another member.
 
-**Chunk interleaving (theoretical)**: ❌ The TAR specification provides no mechanism for interleaving. A non-standard extension could be imagined using PAX extended header records as framing tokens, but this would be entirely non-standard.
+**Chunk interleaving (theoretical)**: ❌ The TAR specification provides no mechanism for interleaving data blocks _within_ a single member — each member's data must be contiguous after its header. However, nothing in the spec prevents writing **many small members** with a naming convention that simulates interleaving (see "TAR-based interleaving workaround" below). Additionally, several TAR mechanisms have been investigated for "real" interleaving:
 
-**Conclusion for multi-stream use**: TAR is excellent for single-pass streaming of a flat sequence of files, but fundamentally cannot interleave chunks from different members. It is not suitable as a multi-stream wire format without a new wrapping layer.
+- **GNU tar sparse files** (`--sparse`): Sparse file support stores a data map (offset + size pairs) allowing non-contiguous data segments within a single member. However, all segments of a sparse member must appear contiguously in the archive — no other member's data can appear between them. Sparse files are for efficiently representing files with holes (zero-filled gaps), not for interleaving multiple files.
+- **GNU tar multi-volume** (`--multi-volume`): Multi-volume support splits a large member across multiple physical volumes using continuation headers (`M` type). But continuation records are for spanning tape boundaries, not for interleaving — the continued member's data picks up exactly where the previous volume left off, with no intervening data from other members.
+- **PAX extended headers**: The `pax` format allows arbitrary key-value metadata before each member. A convention could attach stream identifiers or chunk sequence numbers, but this doesn't change the fundamental constraint: each member's data blocks are contiguous.
+- **Hard/symbolic links**: TAR link entries (`1`/`2` type flags) reference other members by name, but carry no data payload — they're not useful for data interleaving.
+
+**Bottom line on TAR "real" interleaving**: The **only** way to achieve interleaved multi-stream data in a valid TAR file is the **chunk-per-member convention** — writing each data chunk as a separate, small TAR member with a naming scheme that encodes the stream identity and chunk order. This IS a real technique that produces valid, standards-compliant TAR files extractable by any TAR tool. It just has higher overhead (512-byte header per chunk) than purpose-built multiplexing formats.
+
+**Conclusion for multi-stream use**: TAR is excellent for single-pass streaming of a flat sequence of files. It cannot interleave data blocks within a member, but the chunk-per-member convention achieves effective interleaving at the member level — producing valid, 7z-extractable TAR files. This makes TAR the strongest practical candidate when compatibility with existing tools is a hard requirement.
 
 ---
 
@@ -656,6 +726,114 @@ HTTP/1.1 chunked encoding is valuable **as prior art for framing design** (hex-l
 
 ---
 
+#### SCTP (Stream Control Transmission Protocol — RFC 4960)
+
+**Popularity**: ★★★☆☆ — standardized in 2000 (RFC 2960, updated to RFC 4960 in 2007). Used in telecom signaling (SS7 over IP / SIGTRAN), 4G/5G core networks (Diameter, S1AP), and WebRTC data channels. Supported by Linux and FreeBSD kernels natively. Limited adoption outside telecom — most applications use TCP or QUIC instead.
+
+**Format overview**: SCTP is a **multi-stream transport protocol** — distinct from TCP in that it natively supports **multiple independent streams** within a single association (connection). Each DATA chunk carries a stream identifier (16-bit) and stream sequence number. Streams are independent: head-of-line blocking on one stream does not block others. SCTP also supports multi-homing (multiple IP addresses per endpoint) and message-oriented delivery (preserving message boundaries, unlike TCP's byte stream).
+
+**Sequential-write streaming**: ✅ Fully supported — DATA chunks are self-contained with stream ID + sequence number + payload.
+
+**Sequential-read streaming**: ✅ Fully supported per stream.
+
+**Chunk interleaving (implementations)**: ✅ Native multiplexing. The Linux kernel SCTP stack and `lksctp-tools` natively multiplex data across streams.
+
+**Chunk interleaving (theoretical)**: ✅ Core design feature — RFC 4960 §1.3.4 defines multi-streaming as a fundamental protocol capability.
+
+**Conclusion for multi-stream use**: SCTP is the **only IETF-standardized transport protocol with native multi-streaming** (predating QUIC by 21 years). Its 16-bit stream IDs and independent stream semantics map perfectly to multi-stream piping. However, like QUIC and SSH, it is a **kernel-level transport protocol** — using it for local pipe multiplexing would require `socketpair(AF_INET, SOCK_STREAM, IPPROTO_SCTP)` and a full SCTP stack, which is unnecessarily heavy for `cmd1 | cmd2`. Excellent prior art for multi-stream design, particularly the independent stream concept.
+
+---
+
+#### WebSocket (RFC 6455)
+
+**Popularity**: ★★★★★ — universal support in all browsers, web servers, and application frameworks since 2011. Libraries in every language. The standard protocol for real-time web communication (chat, live updates, gaming, collaborative editing).
+
+**Format overview**: WebSocket provides a **framed message protocol** over a single TCP connection. After an HTTP/1.1 upgrade handshake, communication proceeds via binary frames: each frame has an opcode (text/binary/close/ping/pong), a payload length (7/16/64-bit), optional masking (client→server), and the payload data. Messages can be split across multiple frames via fragmentation (FIN bit = 0 for continuation frames).
+
+**Sequential-write streaming**: ✅ Fully supported — frames are self-contained and written forward-only.
+
+**Sequential-read streaming**: ✅ Fully supported.
+
+**Chunk interleaving (implementations)**: ❌ None. WebSocket is a **single logical channel** — there is no stream ID or multiplexing. RFC 6455 §5.4 explicitly prohibits interleaving fragments from different messages: "control frames MAY be injected in the middle of a fragmented message" but data frames from different messages cannot be interleaved.
+
+**Chunk interleaving (theoretical)**: ❌ Not in spec. WebSocket was designed as a single bidirectional channel. The WebSocket community recognized this limitation, leading to the **WebSocket Multiplexing Extension** draft (draft-ietf-hybi-websocket-multiplexing, expired 2013) which proposed adding channel IDs — but it was never standardized and has no implementations. The industry moved to HTTP/2 and WebTransport instead.
+
+**Conclusion for multi-stream use**: WebSocket is an excellent single-stream framing protocol with universal support, but it explicitly lacks multiplexing. The failed multiplexing extension and the industry's move to HTTP/2/WebTransport confirm that multiplexing was the recognized gap.
+
+---
+
+#### D-Bus Wire Protocol
+
+**Popularity**: ★★★★☆ — the standard IPC mechanism on Linux desktops (GNOME, KDE, systemd). Every Linux desktop application uses D-Bus for inter-process communication. `dbus-daemon` runs on virtually all Linux systems. Implementations: libdbus, sd-bus (systemd), GDBus (GLib), zbus (Rust).
+
+**Format overview**: D-Bus uses a **message-based binary protocol** over UNIX domain sockets (or TCP). Messages are typed (method call, method return, error, signal) and contain a header with fields: message type, flags, serial number, destination, sender, interface, member, path, and a body of typed data using D-Bus's type system. The wire format uses native-endian alignment with 8-byte message header alignment. Multiple clients communicate via a message bus daemon (`dbus-daemon`) that routes messages by destination.
+
+**Sequential-write streaming**: ✅ Messages are self-contained and written forward-only — no patching needed.
+
+**Sequential-read streaming**: ✅ Messages can be parsed sequentially.
+
+**Chunk interleaving (implementations)**: ⚠️ Partial — D-Bus multiplexes messages from many senders/receivers, but this is managed by the bus daemon, not at the wire format level. The wire protocol itself is a sequential stream of messages. There is no native "stream" concept — each message is independent.
+
+**Chunk interleaving (theoretical)**: ⚠️ Messages can carry different object paths/interfaces, functioning as a form of multiplexing, but this is application-level routing, not wire-format multiplexing.
+
+**Conclusion for multi-stream use**: D-Bus is a heavyweight IPC system for desktop service communication, not a general-purpose data streaming format. Its message-based model with typed fields is fundamentally different from the byte-stream multiplexing needed for pipe use. The protocol overhead (alignment, type system, bus daemon) makes it impractical for high-throughput stream multiplexing.
+
+---
+
+#### 9P (Plan 9 File Protocol)
+
+**Popularity**: ★★☆☆☆ — the native file protocol of Plan 9 from Bell Labs (1995). Gained wider use through Linux's `v9fs` (9P filesystem client in the kernel), QEMU/KVM's `virtio-9p` for host-guest file sharing, and Windows Subsystem for Linux (WSL2 uses 9P for Windows↔Linux file access). Implementations: Linux kernel, QEMU, `diod`, several Go/Rust libraries.
+
+**Format overview**: 9P is a **request-response file access protocol**. Each message has a 4-byte size, 1-byte type (Tversion/Rversion, Tauth/Rauth, Tattach/Rattach, Twalk/Rwalk, Topen/Ropen, Tread/Rread, Twrite/Rwrite, Tclunk/Rclunk, etc.), and a 2-byte **tag** (request/response correlation ID). The tag field enables **multiplexed concurrent requests** — a client can send multiple Tread/Twrite requests with different tags without waiting for responses. File IDs (fids) identify open files. 9P2000.L extends the protocol with Linux-specific operations.
+
+**Sequential-write streaming**: ✅ Messages are self-contained (size + type + tag + payload) — written forward-only.
+
+**Sequential-read streaming**: ✅ Messages parsed sequentially.
+
+**Chunk interleaving (implementations)**: ✅ Native — 9P clients multiplex file operations using tags. Linux's `v9fs` issues concurrent reads/writes on different files using different tags over a single transport connection.
+
+**Chunk interleaving (theoretical)**: ✅ Core design — tags enable concurrent access to multiple files over a single connection. The protocol explicitly supports multiple outstanding requests.
+
+**Conclusion for multi-stream use**: 9P is a clean multiplexed file access protocol with real adoption (Linux kernel, WSL2, QEMU). Its tag-based request/response multiplexing maps to multi-stream pipe use conceptually, but 9P is a **file operations protocol** (walk, open, read, write, close), not a stream framing format. Using 9P for pure data multiplexing would mean implementing the full file-access state machine. More relevant as prior art (tags, fids) than as a direct candidate.
+
+---
+
+#### Cap'n Proto RPC
+
+**Popularity**: ★★☆☆☆ — created by Kenton Varda (former Google protobuf lead) in 2013. Used by Cloudflare Workers, Sandstorm.io, and some infrastructure projects. Implementations in C++, Rust, Go, Java, Python. Less widely deployed than protobuf/gRPC but technically notable.
+
+**Format overview**: Cap'n Proto defines both a **serialization format** (zero-copy, flat memory layout) and an **RPC protocol**. The RPC protocol uses a message-based format over a stream transport (TCP, UNIX socket, pipe). Each message has a segment table + segments. The RPC layer adds **question IDs** for request/response correlation and supports **pipelining** (sending follow-up requests before receiving the response to the first). Messages are framed with a segment count and segment sizes, then the raw segment data.
+
+**Sequential-write streaming**: ✅ Messages are self-contained and written forward-only.
+
+**Sequential-read streaming**: ✅ Messages parsed by reading segment table then segments.
+
+**Chunk interleaving (implementations)**: ✅ The RPC protocol multiplexes multiple method calls and responses using question IDs. Multiple concurrent RPCs are interleaved at the message level.
+
+**Chunk interleaving (theoretical)**: ✅ Question-based multiplexing is a core RPC feature.
+
+**Conclusion for multi-stream use**: Cap'n Proto's message framing (segment table + segments) is interesting as a zero-copy-friendly format, and the RPC layer's question-based multiplexing is relevant prior art. However, it's an RPC framework, not a stream multiplexing container — using it for pure data streaming would require implementing the RPC protocol. The zero-copy design is notable for high-throughput pipe use.
+
+---
+
+#### CBOR Sequences (RFC 8742)
+
+**Popularity**: ★★★☆☆ — CBOR (Concise Binary Object Representation, RFC 8949) is increasingly used in IoT (CoAP, COSE), WebAuthn/FIDO2, and CDDL-based specifications. CBOR Sequences (RFC 8742, 2020) extend CBOR to support streaming by defining a sequence of concatenated CBOR data items without a wrapping container.
+
+**Format overview**: A CBOR sequence is simply a concatenation of CBOR-encoded data items. Each item is self-delimiting (the type byte encodes the item type and length information — short lengths inline, longer lengths as 1/2/4/8-byte extensions). No framing header, no container structure — just one item after another. For multi-stream use, each item could be a CBOR map or array containing a stream ID and payload.
+
+**Sequential-write streaming**: ✅ Fully supported — each item is self-contained and self-delimiting.
+
+**Sequential-read streaming**: ✅ Fully supported — a parser reads items sequentially.
+
+**Chunk interleaving (implementations)**: ❌ No standard mechanism. Multi-stream would require a convention (e.g., each item is `[stream_id, payload_bytes]`).
+
+**Chunk interleaving (theoretical)**: ⚠️ Possible with application-level convention (tagging each item with a stream ID), but CBOR sequences themselves have no built-in multiplexing.
+
+**Conclusion for multi-stream use**: CBOR sequences are a clean, standardized (IETF) binary streaming format. The self-delimiting encoding eliminates the need for explicit length framing. However, multi-stream multiplexing requires application-level conventions (custom CBOR structure per item). CBOR is more relevant as a serialization choice within a multiplexing container than as the multiplexer itself. The IETF standardization and growing IoT/security ecosystem adoption are positives.
+
+---
+
 #### Custom / Generic Framing Formats
 
 When no existing format is suitable, a lightweight framing protocol can be designed. Several well-known examples exist:
@@ -667,7 +845,7 @@ When no existing format is suitable, a lightweight framing protocol can be desig
 | **HTTP/1.1 chunked** | hex-length + `\r\n` + data + `\r\n` | ✅ | ⚠️ (chunk extensions could carry stream IDs; no implementations) |
 | **HTTP/2 framing** | 9-byte frame header with stream ID | ✅ | ✅ Native |
 | **MessagePack** | Self-delimiting binary encoding | ✅ | ✅ (with envelope) |
-| **CBOR sequences** (RFC 7049 / RFC 8742) | Self-delimiting binary encoding | ✅ | ✅ (with envelope) |
+| **CBOR sequences** (RFC 8949 / RFC 8742) | Self-delimiting binary encoding | ✅ | ✅ (with envelope) |
 | **Protocol Buffers** delimited | Length-prefixed PB messages | ✅ | ✅ (with stream field) |
 | **LTV (Length-Tag-Value)** | Minimal custom framing | ✅ | ✅ Native |
 | **NDJSON** | Newline-delimited JSON | ✅ | ✅ (with stream field) |
@@ -727,6 +905,12 @@ Without tombstones, a reader that simply hits EOF cannot distinguish "the writer
 | **Protobuf delimited** | None (implicit EOF) | ⚠️ Incomplete varint or short payload = truncated | ❌ N/A (convention-dependent) |
 | **QUIC** | FIN bit per stream + CONNECTION_CLOSE | ✅ Yes — missing FIN = incomplete stream | ✅ Yes — FIN bit per stream ID |
 | **LHA/LZH** | Zero-size header sentinel | ✅ Yes — missing sentinel = truncated | ❌ N/A (single-stream) |
+| **SCTP** | SHUTDOWN/ABORT chunks | ✅ Yes — missing SHUTDOWN = unclean | ❌ No per-stream end signal |
+| **WebSocket** | Close frame (opcode 0x8) | ✅ Yes — missing close = truncated | ❌ N/A (single-stream) |
+| **D-Bus** | None (message-based; no explicit end) | ⚠️ Incomplete message header = truncated | ❌ N/A |
+| **9P** | Tclunk per fid (not per stream) | ⚠️ Protocol-level; not stream-level | ⚠️ Per-fid only |
+| **Cap'n Proto RPC** | Finish message per question | ✅ Yes — per-question completion | ⚠️ Per-question, not per-stream |
+| **CBOR sequences** | None (implicit EOF) | ⚠️ Incomplete item detectable | ❌ N/A |
 | **Custom LTV** | Depends on design — typically a zero-length sentinel or explicit END frame | Designer's choice — **should** include an end marker | Designer's choice |
 
 ¹ In `ar`, the reader knows each member's size from its header, so truncation *within* a member is detectable (fewer bytes than declared). But truncation *between* members is indistinguishable from a valid archive with fewer members.
@@ -735,7 +919,7 @@ Without tombstones, a reader that simply hits EOF cannot distinguish "the writer
 
 ### Best-in-class: formats with per-stream tombstones
 
-For advanced multi-stream pipe use where individual streams may finish independently, **per-stream finalization** provides the strongest guarantees — the reader knows when each individual logical stream is complete, not just the overall container. Five formats provide this natively (though a container-level tombstone is sufficient for most use cases):
+For advanced multi-stream pipe use where individual streams may finish independently, **per-stream finalization** provides the strongest guarantees — the reader knows when each individual logical stream is complete, not just the overall container. Six formats provide this natively (though a container-level tombstone is sufficient for most use cases):
 
 1. **Ogg** — each logical bitstream has an explicit **EOS (End of Stream) flag** in the last page's header for that stream. A reader can detect per-stream completion and distinguish it from truncation. The Ogg page CRC-32 also provides integrity checking for each page.
 
@@ -746,6 +930,8 @@ For advanced multi-stream pipe use where individual streams may finish independe
 4. **NUT** — provides an **EOR (End of Relevance)** frame per stream, explicitly marking when a stream has no more data. Combined with startcode-based sync, this enables clean per-stream finalization.
 
 5. **QUIC** — the **FIN bit** on STREAM frames explicitly marks the end of each stream. **CONNECTION_CLOSE** terminates the entire connection. Per-stream finalization is a core protocol feature.
+
+6. **SCTP** — while SCTP does not have per-stream end signals (SHUTDOWN terminates the entire association), its independent stream model means a higher-level protocol can implement per-stream finalization. Included for completeness alongside other transport protocols.
 
 Formats like TAR (two zero blocks), CPIO (`TRAILER!!!`), and HTTP/1.1 chunked (zero-length chunk) have *container-level* end markers but no per-stream finalization — because they don't support multiple concurrent streams.
 
@@ -872,12 +1058,18 @@ The strongest requirement is a format that is **not multimedia-specific** — on
 | 1 | **Ogg** | 2003 | ★★★☆☆ | Binary | ✅ By spec (RFC 3533) | Spec says "general-purpose bitstream encapsulation" — but **all existing tooling is multimedia-only** (`7z x file.ogg` won't work; no archive utility recognizes it) |
 | 2 | **HTTP/2 framing** | 2015 | ★★★★★ | Binary | ✅ By design | **Binary** stream multiplexer (9-byte binary frame header); but carries protocol complexity beyond just framing |
 | 3 | **QUIC** | 2021 | ★★★★☆ | Binary | ✅ By design | **Binary** transport protocol; but requires full stack (TLS, congestion control, UDP) |
-| 4 | **HTTP/1.1 chunked** | 1997 | ★★★★★ | Text | ✅ By design | **Text-based** framing (hex-length + CRLF); chunk extensions allow stream tagging in theory but no implementations exist |
-| 5 | **SSH channels** | 1995 | ★★★★★ | Binary | ✅ By design | **Binary** protocol; proven channel multiplexing; but encryption/key-exchange overhead is unnecessary for local pipes |
-| 6 | **Protobuf delimited** | 2008 | ★★★★☆ | Binary | ✅ By design | **Binary** varint-prefixed framing; but multi-stream requires custom envelope design |
-| 7 | **WARC** | 2009 | ★★★☆☆ | Text headers + binary payload | ✅ By spec (ISO 28500) | **Text headers** (HTTP-style) + binary payload; non-multimedia, ISO-standardized, streaming-capable; but sequential (no interleaving) |
-| 8 | **Avro OCF** | 2009 | ★★★☆☆ | Binary | ✅ Data-oriented | **Binary** with JSON schema header; streaming with sync markers; but single-schema per file (no heterogeneous streams) |
-| 9 | **Custom LTV** | — | N/A | Binary | ✅ By definition | **Binary** (designer's choice); zero legacy baggage; trivial to implement; but no established standard/tooling |
+| 4 | **SCTP** | 2000 | ★★★☆☆ | Binary | ✅ By design | **Binary** transport protocol with native multi-streaming (16-bit stream IDs); but requires kernel stack |
+| 5 | **HTTP/1.1 chunked** | 1997 | ★★★★★ | Text | ✅ By design | **Text-based** framing (hex-length + CRLF); chunk extensions allow stream tagging in theory but no implementations exist |
+| 6 | **SSH channels** | 1995 | ★★★★★ | Binary | ✅ By design | **Binary** protocol; proven channel multiplexing; but encryption/key-exchange overhead is unnecessary for local pipes |
+| 7 | **WebSocket** | 2011 | ★★★★★ | Binary | ✅ By design | **Binary** framed messages; but **single channel only** — multiplexing extension was proposed but never standardized |
+| 8 | **9P** | 1995 | ★★☆☆☆ | Binary | ✅ By design | **Binary** file access protocol with tag-based multiplexing; but requires full file-operations state machine |
+| 9 | **Protobuf delimited** | 2008 | ★★★★☆ | Binary | ✅ By design | **Binary** varint-prefixed framing; but multi-stream requires custom envelope design |
+| 10 | **CBOR sequences** | 2020 | ★★★☆☆ | Binary | ✅ By spec (RFC 8742) | **Binary** self-delimiting items; IETF standardized; but multi-stream requires custom convention |
+| 11 | **Cap'n Proto RPC** | 2013 | ★★☆☆☆ | Binary | ✅ By design | **Binary** zero-copy framing with question-based multiplexing; but full RPC protocol overhead |
+| 12 | **WARC** | 2009 | ★★★☆☆ | Text headers + binary payload | ✅ By spec (ISO 28500) | **Text headers** (HTTP-style) + binary payload; non-multimedia, ISO-standardized, streaming-capable; but sequential (no interleaving) |
+| 13 | **Avro OCF** | 2009 | ★★★☆☆ | Binary | ✅ Data-oriented | **Binary** with JSON schema header; streaming with sync markers; but single-schema per file (no heterogeneous streams) |
+| 14 | **D-Bus** | 2006 | ★★★★☆ | Binary | ⚠️ IPC-specific | **Binary** message protocol for desktop IPC; bus-level routing but not wire-level multiplexing; heavyweight type system |
+| 15 | **Custom LTV** | — | N/A | Binary | ✅ By definition | **Binary** (designer's choice); zero legacy baggage; trivial to implement; but no established standard/tooling |
 
 **Binary vs text**: Nearly all multiplexing formats are **binary** protocols — HTTP/2, QUIC, SSH, Ogg, Protobuf all use binary framing for efficiency. The notable exception is **HTTP/1.1 chunked encoding**, which uses **text-based** framing (`hex-length\r\n...data...\r\n`), making it human-readable and debuggable with standard text tools — but it lacks multiplexing. **WARC** uses text headers (HTTP-style `Key: Value\r\n`) with binary payloads, giving it readability for metadata while keeping payload efficiency. Among multiplexing candidates, there is no established text-based format — this is because text framing adds parsing overhead and ambiguity (delimiter escaping) that binary length-prefixed formats avoid.
 
@@ -891,7 +1083,15 @@ The strongest requirement is a format that is **not multimedia-specific** — on
 
 **QUIC** (RFC 9000, 2021) is the most advanced multiplexing transport protocol, fixing HTTP/2's head-of-line blocking problem with independent streams. Its STREAM frames with 62-bit stream IDs and FIN bits are the cleanest modern multiplexing primitive. However, QUIC is a **full transport protocol** — it requires TLS 1.3 encryption, congestion control, packet loss recovery, and runs over UDP. Using QUIC for local pipe multiplexing would be like using SSH channels: technically correct but absurdly over-engineered.
 
+**SCTP** (RFC 4960, 2000) is historically significant as the **first IETF-standardized transport protocol with native multi-streaming** — predating QUIC by 21 years. Its 16-bit stream IDs and independent stream semantics map directly to the multi-stream pipe use case. However, like QUIC and SSH, SCTP is a kernel-level transport protocol requiring a full stack, making it impractical for local pipe use. Important as prior art for the independent-stream concept.
+
+**WebSocket** (RFC 6455, 2011) is universally deployed for real-time web communication but is explicitly a **single-channel** protocol. The WebSocket community recognized the missing multiplexing capability: a multiplexing extension was drafted (draft-ietf-hybi-websocket-multiplexing) but expired in 2013 without standardization. The industry moved to HTTP/2 and WebTransport instead. WebSocket confirms that single-stream framing is well-solved, but multiplexing requires a fundamentally different design.
+
+**9P** (Plan 9, 1995) is a clean multiplexed file access protocol with real modern adoption (Linux kernel v9fs, WSL2, QEMU). Its tag-based request/response multiplexing is elegant prior art, but the protocol requires implementing a full file-operations state machine (walk, open, read, write, close) — too heavyweight for pure data streaming.
+
 **Protobuf delimited messages** deserve mention as one of the most widely deployed length-prefixed framing conventions. The varint-length + message pattern is used by gRPC, Google internal systems, and countless applications. However, multi-stream multiplexing requires a custom envelope message — protobuf is a serialization format, not a multiplexing container.
+
+**CBOR sequences** (RFC 8742, 2020) provide IETF-standardized binary streaming via concatenated self-delimiting items. The self-delimiting encoding eliminates explicit length framing, but multi-stream use requires an application-level convention (e.g., each item wraps a stream ID + payload). More relevant as a serialization choice within a multiplexing container.
 
 **WARC** (ISO 28500, 2009) and **Avro OCF** (Apache, 2009) are notable as **non-multimedia** streaming formats with real adoption. WARC is used for web archiving (Internet Archive, Common Crawl) and Avro for big-data pipelines (Kafka, Hadoop). Both support streaming write (no patching) but are fundamentally **sequential** — WARC records and Avro blocks contain homogeneous data with no interleaving mechanism. They confirm that the data engineering and archiving communities have the same streaming needs, but neither format solves the interleaving problem.
 
@@ -926,7 +1126,7 @@ Evaluated on streaming (no patching), interleaving, general-purpose suitability,
 
 5. **HTTP/2 framing (inspiration)** — a **binary** protocol (the 9-byte frame header with **END_STREAM flag** and **GOAWAY** connection shutdown is worth studying as prior art for any new "mux" format). HTTP/2 is explicitly **not** a text format — it was designed as a binary replacement for HTTP/1.1's text-based framing. Using the full HTTP/2 spec directly is overkill; the framing layer design is the useful takeaway.
 
-6. **QUIC (inspiration)** — a **binary** transport protocol, the state-of-the-art in multiplexed transport (RFC 9000). Per-stream FIN bit, independent streams without HOL blocking, and 62-bit stream IDs represent the gold standard for multiplexing design. Like HTTP/2, useful as prior art rather than direct reuse.
+6. **QUIC / SCTP (inspiration)** — **binary** transport protocols representing the state-of-the-art (QUIC, RFC 9000, 2021) and the original (SCTP, RFC 4960, 2000) in multiplexed transport design. Per-stream FIN bit (QUIC), independent streams without HOL blocking (both), and 62-bit (QUIC) / 16-bit (SCTP) stream IDs. SCTP predates QUIC by 21 years and proves that independent multi-streaming was recognized as a fundamental transport need. Both are useful as prior art rather than direct reuse — they require full transport stacks (TLS, congestion control, kernel sockets).
 
 ### Non-starters for multi-stream use
 
@@ -948,6 +1148,10 @@ Evaluated on streaming (no patching), interleaving, general-purpose suitability,
 - **Protobuf delimited** — excellent framing primitive, but multi-stream requires custom envelope (not a standard).
 - **MP4 (regular)** — moov atom requires pre-computation or patching (fMP4 streams but is complex).
 - **FLV** — streaming and interleaving, but deprecated (Flash EOL 2020), single stream ID field unused.
+- **WebSocket** — excellent single-stream framing with universal support, but explicitly single-channel; multiplexing extension was never standardized.
+- **D-Bus** — heavyweight IPC protocol for desktop services; bus-level routing, not wire-level multiplexing; typed message overhead.
+- **CBOR sequences** — clean IETF-standardized binary streaming, but no built-in multiplexing (requires application convention).
+- **Cap'n Proto** — zero-copy RPC framework; question-based multiplexing but requires full RPC protocol implementation.
 
 ### 7z extractability and stream naming
 
@@ -955,7 +1159,7 @@ A practical requirement: can the output be listed and extracted using `7z` (p7zi
 
 #### Formats supported by 7z for extraction/listing
 
-`7z` (via p7zip) can list and extract the following formats from the 33 analyzed:
+`7z` (via p7zip) can list and extract the following formats from the 39 analyzed:
 
 | Format | 7z support | Streaming (no patching) | Interleaving | File names |
 |---|---|---|---|---|
@@ -971,7 +1175,7 @@ A practical requirement: can the output be listed and extracted using `7z` (p7zi
 | **XAR** | ✅ `7z l file.xar` | ❌ No (pre-computed) | ❌ No | ✅ Full paths |
 | **LHA/LZH** | ✅ `7z l file.lzh` | ✅ Yes | ❌ No | ✅ Full paths |
 
-**Not supported by 7z**: Ogg, MPEG-TS, MPEG-PS, Matroska/WebM, ASF, CAF, HTTP/2, SSH, HTTP/1.1, MIME, FLV, NUT, WARC, Avro, Protobuf, QUIC, MP4, AVI/RIFF, IFF.
+**Not supported by 7z**: Ogg, MPEG-TS, MPEG-PS, Matroska/WebM, ASF, CAF, HTTP/2, SSH, HTTP/1.1, MIME, FLV, NUT, WARC, Avro, Protobuf, QUIC, SCTP, WebSocket, D-Bus, 9P, Cap'n Proto, CBOR, MP4, AVI/RIFF, IFF.
 
 **Key finding**: Among all 7z-extractable formats, **none support interleaving**. Every 7z-compatible format is strictly sequential — files must be written one at a time, fully, before the next begins. This means:
 
@@ -998,9 +1202,15 @@ For multi-stream pipe use, each logical stream should be identifiable by a **nam
 | **FLV** | Tag type byte (audio/video/script) | ❌ Fixed types, no naming |
 | **MP4/fMP4** | Track Name box (udta/name) or handler name | ⚠️ Possible but non-standard |
 | **Protobuf** | Field tags (integers) — names in .proto schema only | ❌ Numeric tags only at wire level |
+| **SCTP** | 16-bit stream ID (integer) | ❌ Numeric ID only |
+| **WebSocket** | N/A (single channel) | ❌ No stream concept |
+| **D-Bus** | Object path + interface + member name | ✅ Path-based naming |
+| **9P** | File path (walk + fid) | ✅ Full file paths |
+| **Cap'n Proto** | Question ID (integer) | ❌ Numeric IDs only |
+| **CBOR sequences** | Application-defined per item | ❌ No standard naming |
 | **Custom LTV** | Designer's choice — can include name field | ✅ If designed with name support |
 
-**Finding**: Only archive formats (TAR, CPIO, ZIP) and Matroska natively support human-readable file names per stream. All protocol-style multiplexers (HTTP/2, SSH, QUIC, Ogg) use numeric stream IDs — file name mapping must happen at the application level (e.g., a manifest message at the start of the stream that maps stream ID → file name).
+**Finding**: Only archive formats (TAR, CPIO, ZIP), Matroska, D-Bus (object paths), and 9P (file paths) natively support human-readable names per stream. All other protocol-style multiplexers (HTTP/2, SSH, QUIC, SCTP, Ogg) use numeric stream IDs — file name mapping must happen at the application level (e.g., a manifest message at the start of the stream that maps stream ID → file name).
 
 #### TAR-based interleaving workaround
 
@@ -1048,22 +1258,23 @@ At 4 KiB payload chunks, TAR member overhead is ~12.5% (512-byte header per 4096
 
 Placing all requirements together:
 
-| Requirement | TAR (interleaved hack) | Ogg | HTTP/2 framing | Custom LTV | Matroska |
-|---|---|---|---|---|---|
-| Streaming (no patching) | ✅ | ✅ | ✅ | ✅ | ⚠️ Conditional |
-| Interleaving | ✅ (via naming convention) | ✅ Native | ✅ Native | ✅ By design | ✅ Native |
-| File names | ✅ Native (paths in headers) | ❌ Numeric IDs | ⚠️ Via HTTP headers | ✅ If designed in | ✅ Track names |
-| 7z extractable | ✅ `7z l file.tar` | ❌ | ❌ | ❌ | ❌ |
-| Tombstone (end marker) | ✅ Two zero blocks | ✅ EOS flag (per-stream) | ✅ END_STREAM (per-stream) | ✅ If designed in | ❌ None |
-| Low overhead | ❌ (~0.8–12.5%) | ✅ (~0.5–1%) | ✅ (~0.05%) | ✅ (~0.01%) | ✅ (~0.1–1%) |
+| Requirement | TAR (interleaved hack) | Ogg | HTTP/2 framing | SCTP | 9P | Custom LTV | Matroska |
+|---|---|---|---|---|---|---|---|
+| Streaming (no patching) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ Conditional |
+| Interleaving | ✅ (via naming convention) | ✅ Native | ✅ Native | ✅ Native | ✅ Tag-based | ✅ By design | ✅ Native |
+| File names | ✅ Native (paths in headers) | ❌ Numeric IDs | ⚠️ Via HTTP headers | ❌ Numeric IDs | ✅ File paths | ✅ If designed in | ✅ Track names |
+| 7z extractable | ✅ `7z l file.tar` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Tombstone (end marker) | ✅ Two zero blocks | ✅ EOS flag (per-stream) | ✅ END_STREAM (per-stream) | ✅ SHUTDOWN | ⚠️ Tclunk per fid | ✅ If designed in | ❌ None |
+| Low overhead | ❌ (~0.8–12.5%) | ✅ (~0.5–1%) | ✅ (~0.05%) | ✅ (~0.01%) | ⚠️ Request/response | ✅ (~0.01%) | ✅ (~0.1–1%) |
+| No full protocol stack required | ✅ | ✅ | ❌ (HPACK, flow ctrl) | ❌ (kernel stack) | ❌ (file ops FSM) | ✅ | ✅ |
 
-**Core trade-off**: TAR is the **only** format that is simultaneously 7z-extractable, streaming-writable, can carry file names, and has a container-level tombstone (two zero blocks for truncation detection). It achieves "interleaving" through a naming convention (each chunk is a separate TAR member), with significant overhead vs custom LTV. Every native multiplexing format (Ogg, HTTP/2, QUIC, NUT) fails the 7z extractability test.
+**Core trade-off**: TAR is the **only** format that is simultaneously 7z-extractable, streaming-writable, can carry file names, has a container-level tombstone, and requires no protocol stack beyond simple file I/O. It achieves "interleaving" through a naming convention (each chunk is a separate TAR member), with significant overhead vs custom LTV. Every native multiplexing format (Ogg, HTTP/2, QUIC, SCTP, NUT, 9P) fails the 7z extractability test. Transport protocols (SCTP, QUIC, HTTP/2, SSH) additionally require protocol stacks inappropriate for local pipe use.
 
 **Practical conclusion**: **TAR with interleaved chunk members is the strongest candidate** when 7z extractability and file names are hard requirements. It satisfies streaming (no patching), interleaving (via naming convention), file names (native), 7z extractability, and truncation detection (two zero blocks as tombstone). The trade-offs are overhead (~0.8–12.5% depending on chunk size) and the need for a reassembly tool to reconstruct per-stream files from chunks. If 7z extractability can be relaxed (e.g., a dedicated `mux` tool is acceptable), then a custom LTV format remains the lowest-overhead option.
 
 ### Open questions / TBD
 
-- TBD: Feasibility of a new minimal open spec designed specifically for general-purpose multi-stream CLI piping (working name: "mux"). HTTP/2's 9-byte frame header, QUIC's per-stream FIN bit, Ogg's page structure, NUT's startcode sync, and HTTP/1.1's chunked encoding (hex-length + extensions) are the strongest prior art to draw from.
+- TBD: Feasibility of a new minimal open spec designed specifically for general-purpose multi-stream CLI piping (working name: "mux"). HTTP/2's 9-byte frame header, QUIC's per-stream FIN bit, SCTP's independent stream model, Ogg's page structure, NUT's startcode sync, and HTTP/1.1's chunked encoding (hex-length + extensions) are the strongest prior art to draw from.
 
 ---
 
@@ -1084,6 +1295,11 @@ A practical concern when choosing a multi-stream container for CLI pipes is **fr
 | **QUIC STREAM frame** | 1–17 bytes (type + stream_id + offset + length) | Variable | < 0.03% at 64 KiB frames | Variable-length integer encoding; stream ID native |
 | **NUT** | 1–13 bytes (startcode + stream_id + pts + size) | Variable | ~0.02% at 64 KiB frames | Variable-length coding; startcodes for sync recovery |
 | **MP4/fMP4** | ~100+ bytes (moof box per fragment) | Variable | ~0.1–0.5% | Box structure adds significant per-fragment overhead; includes track/sample metadata |
+| **SCTP** | 16+ bytes (DATA chunk header) | Variable | ~0.02% at 64 KiB | Transport-level; includes TSN, stream ID, SSN |
+| **WebSocket** | 2–14 bytes (opcode + length + optional mask) | Variable | ~0.02% at 64 KiB | Simple framing; but single-stream only |
+| **CBOR sequences** | 1–9 bytes (type + length encoding) | Variable | < 0.01% at large items | Self-delimiting; no explicit length prefix for known types |
+| **Cap'n Proto** | 8+ bytes (segment table) | Variable | ~0.01% at large segments | Zero-copy design; segment-based framing |
+| **TAR (chunk hack)** | 512 bytes (member header) | Variable | ~0.8% at 64 KiB, ~12.5% at 4 KiB | Fixed 512-byte header per chunk; 512-byte alignment padding |
 
 **Key takeaway**: Custom LTV framing has the lowest overhead for high-throughput CLI pipes. Ogg and MPEG-TS add meaningful overhead but provide checksums (Ogg) or sync recovery (MPEG-TS) which matter for unreliable channels. For reliable UNIX pipes, the extra error-resilience features are less valuable, making LTV or Ogg the pragmatic choices.
 
@@ -1217,3 +1433,11 @@ This makes the **LTV custom framing** approach even more attractive: its 8-byte 
 - [ECMA-119 / ISO 9660 — Volume and File Structure of CD-ROM](https://www.ecma-international.org/publications-and-standards/standards/ecma-119/)
 - [WIM File Format (Microsoft)](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/xpewim/wim-file-format)
 - [Microsoft Cabinet File Format](https://learn.microsoft.com/en-us/previous-versions/bb267310(v=msdn.10))
+- [RFC 4960 — Stream Control Transmission Protocol (SCTP)](https://www.rfc-editor.org/rfc/rfc4960)
+- [RFC 6455 — The WebSocket Protocol](https://www.rfc-editor.org/rfc/rfc6455)
+- [RFC 9000 — QUIC: A UDP-Based Multiplexed and Secure Transport](https://www.rfc-editor.org/rfc/rfc9000)
+- [RFC 8949 — Concise Binary Object Representation (CBOR)](https://www.rfc-editor.org/rfc/rfc8949)
+- [RFC 8742 — Concise Binary Object Representation (CBOR) Sequences](https://www.rfc-editor.org/rfc/rfc8742)
+- [D-Bus Specification](https://dbus.freedesktop.org/doc/dbus-specification.html)
+- [9P Protocol — Plan 9 Manual](http://man.cat-v.org/plan_9/5/intro)
+- [Cap'n Proto RPC Protocol](https://capnproto.org/rpc.html)
