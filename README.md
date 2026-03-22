@@ -863,23 +863,25 @@ The ideal candidate would be a format as popular and well-established as ZIP or 
 
 The strongest requirement is a format that is **not multimedia-specific** — one designed for arbitrary data streams, not audio/video tracks. Sorted by suitability:
 
-| Rank | Format | Year | Popularity | General-purpose? | Notes |
-|---|---|---|---|---|---|
-| 1 | **Ogg** | 2003 | ★★★☆☆ | ✅ By spec (RFC 3533) | Spec says "general-purpose bitstream encapsulation" — but **all existing tooling is multimedia-only** (`7z x file.ogg` won't work; no archive utility recognizes it) |
-| 2 | **HTTP/2 framing** | 2015 | ★★★★★ | ✅ By design | Stream multiplexer for arbitrary data; but carries protocol complexity beyond just framing |
-| 3 | **QUIC** | 2021 | ★★★★☆ | ✅ By design | State-of-the-art multiplexing (independent streams, FIN per stream); but requires full transport stack (TLS, congestion control, UDP) |
-| 4 | **HTTP/1.1 chunked** | 1997 | ★★★★★ | ✅ By design | Excellent single-stream framing; chunk extensions allow stream tagging in theory but no implementations exist |
-| 5 | **SSH channels** | 1995 | ★★★★★ | ✅ By design | Proven channel multiplexing; but encryption/key-exchange overhead is unnecessary for local pipes |
-| 6 | **Protobuf delimited** | 2008 | ★★★★☆ | ✅ By design | Widely deployed length-prefixed framing; but multi-stream requires custom envelope design |
-| 7 | **WARC** | 2009 | ★★★☆☆ | ✅ By spec (ISO 28500) | Non-multimedia, ISO-standardized, streaming-capable; but sequential (no interleaving) |
-| 8 | **Avro OCF** | 2009 | ★★★☆☆ | ✅ Data-oriented | Streaming with sync markers; but single-schema per file (no heterogeneous streams) |
-| 9 | **Custom LTV** | — | N/A | ✅ By definition | Zero legacy baggage; trivial to implement; but no established standard/tooling |
+| Rank | Format | Year | Popularity | Wire format | General-purpose? | Notes |
+|---|---|---|---|---|---|---|
+| 1 | **Ogg** | 2003 | ★★★☆☆ | Binary | ✅ By spec (RFC 3533) | Spec says "general-purpose bitstream encapsulation" — but **all existing tooling is multimedia-only** (`7z x file.ogg` won't work; no archive utility recognizes it) |
+| 2 | **HTTP/2 framing** | 2015 | ★★★★★ | Binary | ✅ By design | **Binary** stream multiplexer (9-byte binary frame header); but carries protocol complexity beyond just framing |
+| 3 | **QUIC** | 2021 | ★★★★☆ | Binary | ✅ By design | **Binary** transport protocol; but requires full stack (TLS, congestion control, UDP) |
+| 4 | **HTTP/1.1 chunked** | 1997 | ★★★★★ | Text | ✅ By design | **Text-based** framing (hex-length + CRLF); chunk extensions allow stream tagging in theory but no implementations exist |
+| 5 | **SSH channels** | 1995 | ★★★★★ | Binary | ✅ By design | **Binary** protocol; proven channel multiplexing; but encryption/key-exchange overhead is unnecessary for local pipes |
+| 6 | **Protobuf delimited** | 2008 | ★★★★☆ | Binary | ✅ By design | **Binary** varint-prefixed framing; but multi-stream requires custom envelope design |
+| 7 | **WARC** | 2009 | ★★★☆☆ | Text headers + binary payload | ✅ By spec (ISO 28500) | **Text headers** (HTTP-style) + binary payload; non-multimedia, ISO-standardized, streaming-capable; but sequential (no interleaving) |
+| 8 | **Avro OCF** | 2009 | ★★★☆☆ | Binary | ✅ Data-oriented | **Binary** with JSON schema header; streaming with sync markers; but single-schema per file (no heterogeneous streams) |
+| 9 | **Custom LTV** | — | N/A | Binary | ✅ By definition | **Binary** (designer's choice); zero legacy baggage; trivial to implement; but no established standard/tooling |
+
+**Binary vs text**: Nearly all multiplexing formats are **binary** protocols — HTTP/2, QUIC, SSH, Ogg, Protobuf all use binary framing for efficiency. The notable exception is **HTTP/1.1 chunked encoding**, which uses **text-based** framing (`hex-length\r\n...data...\r\n`), making it human-readable and debuggable with standard text tools — but it lacks multiplexing. **WARC** uses text headers (HTTP-style `Key: Value\r\n`) with binary payloads, giving it readability for metadata while keeping payload efficiency. Among multiplexing candidates, there is no established text-based format — this is because text framing adds parsing overhead and ambiguity (delimiter escaping) that binary length-prefixed formats avoid.
 
 **Ogg** (RFC 3533, 2003) is the **best general-purpose candidate among established formats by specification**. Despite its reputation as "the Vorbis/Opus container," RFC 3533 is explicitly a general-purpose bitstream encapsulation format — it defines pages, stream serial numbers, and granule positions with no multimedia-specific semantics. An Ogg stream carrying arbitrary tagged data chunks is fully spec-compliant. It has IETF standardization, clean implementations (`libogg` in C, crates in Rust, packages in Python/Go), and ~0.5–1% framing overhead with CRC-32 integrity.
 
 **Critical caveat**: In practice, Ogg is entirely a multimedia format. No general-purpose archive tool can handle it — `7z x file.ogg` does not work, `file(1)` reports it as audio/video, and every existing library/tool assumes multimedia content. Using Ogg for arbitrary data would mean writing Ogg pages directly (the page format is simple enough for a clean-room implementation) while accepting that no user or tool in the ecosystem would recognize the result as anything but a broken media file. This gap between spec and ecosystem is the central tension.
 
-**HTTP/2 framing** (RFC 7540, 2015) is the most widely deployed general-purpose multiplexing format in the world, with universal browser/server/CDN support. Its 9-byte frame header with 31-bit stream ID is exactly the "stream N, chunk M" primitive needed. However, extracting just the framing layer from HTTP/2 means ignoring most of the spec (HPACK, flow control, SETTINGS, stream priorities) — it would be using ~5% of a complex protocol. Suitable as prior art / inspiration rather than direct reuse.
+**HTTP/2 framing** (RFC 7540, 2015) is the most widely deployed general-purpose multiplexing format in the world, with universal browser/server/CDN support. It is a **binary protocol** — the 9-byte frame header contains binary-encoded fields (3-byte length, 1-byte type, 1-byte flags, 31-bit stream ID), not human-readable text. This was a deliberate design choice: HTTP/1.1 was text-based (human-readable headers), and HTTP/2 switched to binary framing specifically for parsing efficiency and to eliminate text-parsing ambiguities. Its 31-bit stream ID is exactly the "stream N, chunk M" primitive needed. However, extracting just the framing layer from HTTP/2 means ignoring most of the spec (HPACK, flow control, SETTINGS, stream priorities) — it would be using ~5% of a complex protocol. HTTP/2 framing is best understood as **prior art / inspiration** for a new minimal multiplexing format, rather than a format to use directly.
 
 **SSH channels** (RFC 4254, since ~1995) are the oldest general-purpose multiplexing mechanism still in universal production use. However, the encryption and connection-setup overhead makes it impractical for local pipe multiplexing.
 
@@ -908,15 +910,17 @@ These are proven and well-tooled but carry multimedia-specific framing (PIDs, PA
 
 Evaluated on streaming (no patching), interleaving, general-purpose suitability, and **stream finalization (tombstones)** — the ability to distinguish clean completion from truncation on a per-stream basis.
 
-1. **Ogg** — the best fit **by specification** for general-purpose use. IETF standard (RFC 3533), explicitly general-purpose by spec, clean page-based multiplexing with CRC integrity, ~0.5–1% overhead, **per-stream EOS flag** for tombstones. **Major practical limitation**: all existing tooling is multimedia-only — no archive utility recognizes Ogg for arbitrary data (`7z x file.ogg` won't work). Requires a clean-room page writer (~200 lines of C) and accepting that no existing ecosystem tool will help users inspect the result.
+**Core finding**: No existing format is a perfect fit. Every candidate has a fundamental limitation — Ogg's tooling is multimedia-only, HTTP/2 and QUIC are complex binary protocols with unnecessary overhead, SSH requires encryption, and everything else either lacks interleaving or lacks tombstones. This is precisely why the "custom LTV / new spec" option exists: the gap is real.
 
-2. **Custom LTV framing** — minimal overhead (~0.01%), trivial to implement (8-byte header: stream_id + length), language-agnostic. **Must include an explicit end-of-stream frame type** in the design to provide tombstone functionality. Best choice when no legacy format compatibility is needed and simplicity is paramount.
+1. **Ogg** — the best fit **by specification** for general-purpose use. IETF standard (RFC 3533), explicitly general-purpose by spec, clean page-based multiplexing with CRC integrity, ~0.5–1% overhead, **per-stream EOS flag** for tombstones. **Binary** format (not human-readable). **Major practical limitation**: all existing tooling is multimedia-only — no archive utility recognizes Ogg for arbitrary data (`7z x file.ogg` won't work). Requires a clean-room page writer (~200 lines of C) and accepting that no existing ecosystem tool will help users inspect the result.
 
-3. **MPEG-TS** — the most battle-tested streaming format (30 years, digital TV worldwide). Best choice if multimedia tooling integration is desired or error-resilient sync recovery matters. **Lacks per-stream end markers** (by design, for broadcast) — truncation detection requires application-level signaling.
+2. **Custom LTV framing** — minimal overhead (~0.01%), trivial to implement (8-byte header: stream_id + length), language-agnostic. **Binary** format (can be designed text-based if desired, e.g., using HTTP/1.1 chunked-style hex lengths). **Must include an explicit end-of-stream frame type** in the design to provide tombstone functionality. Best choice when no legacy format compatibility is needed and simplicity is paramount.
 
-4. **HTTP/2 framing (inspiration)** — the 9-byte frame header design with **END_STREAM flag** and **GOAWAY** connection shutdown is worth studying as prior art for any new "mux" format, even if using the full HTTP/2 spec is overkill.
+3. **MPEG-TS** — the most battle-tested streaming format (30 years, digital TV worldwide). **Binary** format. Best choice if multimedia tooling integration is desired or error-resilient sync recovery matters. **Lacks per-stream end markers** (by design, for broadcast) — truncation detection requires application-level signaling.
 
-5. **QUIC (inspiration)** — the state-of-the-art in multiplexed transport (RFC 9000). Per-stream FIN bit, independent streams without HOL blocking, and 62-bit stream IDs represent the gold standard for multiplexing design. Like HTTP/2, useful as prior art rather than direct reuse.
+4. **HTTP/2 framing (inspiration)** — a **binary** protocol (the 9-byte frame header with **END_STREAM flag** and **GOAWAY** connection shutdown is worth studying as prior art for any new "mux" format). HTTP/2 is explicitly **not** a text format — it was designed as a binary replacement for HTTP/1.1's text-based framing. Using the full HTTP/2 spec directly is overkill; the framing layer design is the useful takeaway.
+
+5. **QUIC (inspiration)** — a **binary** transport protocol, the state-of-the-art in multiplexed transport (RFC 9000). Per-stream FIN bit, independent streams without HOL blocking, and 62-bit stream IDs represent the gold standard for multiplexing design. Like HTTP/2, useful as prior art rather than direct reuse.
 
 ### Non-starters for multi-stream use
 
