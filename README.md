@@ -1355,9 +1355,23 @@ Placing all requirements together:
 
 **Practical conclusion**: **TAR with interleaved chunk members is the strongest candidate** when 7z extractability and file names are hard requirements. It satisfies streaming (no patching), interleaving (via naming convention), file names (native), 7z extractability, and truncation detection (two zero blocks as tombstone). The trade-offs are overhead (~0.8–12.5% depending on chunk size) and the need for a reassembly tool to reconstruct per-stream files from chunks. If 7z extractability can be relaxed (e.g., a dedicated `mux` tool is acceptable), then a custom LTV format remains the lowest-overhead option.
 
-### Open questions / TBD
+### Current status and practical recommendation
 
-- TBD: Feasibility of a new minimal open spec designed specifically for general-purpose multi-stream CLI piping (working name: "mux"). HTTP/2's 9-byte frame header, QUIC's per-stream FIN bit, SCTP's independent stream model, Ogg's page structure, NUT's startcode sync, and HTTP/1.1's chunked encoding (hex-length + extensions) are the strongest prior art to draw from.
+After evaluating 39 formats across archives, multimedia containers, transport protocols, and custom framing options, the research concludes that **no existing format fully satisfies all requirements** (streaming without patching + native interleaving + file names + 7z extractability + tombstone). The gap between what exists and what is needed is the core finding.
+
+**For immediate practical use**, the **higher-FD (3+) approach** is the most viable path: tools like GPG (`--status-fd`), bubblewrap (`--json-status-fd`), and apt (`APT::Status-Fd`) demonstrate that multi-FD output works reliably for single-hop producer→consumer scenarios. FDs 3–9 are portable across all POSIX shells (bash, zsh, ksh, dash); FDs ≥10 work in bash/zsh/ksh but are silently misparsed by dash. This approach has zero framing overhead, zero latency, and requires no format parsing — but it does not compose across pipeline stages and is not portable to Windows or Nushell.
+
+**For composable multi-stream pipelines** (multiple stages, arbitrary stream counts, cross-platform), the best existing options are:
+1. **TAR with interleaved chunk members** — the only format satisfying 7z extractability + file names + streaming + tombstone, at the cost of ~0.8–12.5% overhead and requiring a reassembly tool.
+2. **HTTP/1.1 chunked encoding with `;stream=N` extensions** — the only text-based multiplexing option, human-debuggable, ~0.03% overhead, but requires custom tooling.
+3. **Custom LTV framing** — lowest overhead (~0.01%), simplest to implement, but no established standard.
+
+### Future work
+
+- Evaluate additional format candidates not yet covered (the space of wire protocols and container formats is vast).
+- Investigate feasibility of a new minimal open specification designed specifically for general-purpose multi-stream CLI piping (working name: "mux"). HTTP/2's 9-byte frame header, QUIC's per-stream FIN bit, SCTP's independent stream model, Ogg's page structure, NUT's startcode sync, and HTTP/1.1's chunked encoding (hex-length + extensions) are the strongest prior art to draw from.
+- Prototype and benchmark TAR-based interleaved chunking vs custom LTV framing for real-world CLI workloads.
+- Explore whether an RFC or community specification process could establish a standard for multi-stream CLI piping.
 
 ---
 
