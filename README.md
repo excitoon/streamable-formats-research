@@ -31,7 +31,7 @@ The most portable and interoperable alternative is to **multiplex several logica
 Evaluate existing archive and container formats against the following criteria:
 
 1. **Popularity** — how widely deployed the format is; availability of tooling.
-2. **Streaming compatibility** — can the format be written and read in a single sequential pass, without seek operations?
+2. **Streaming compatibility** — can the format be **written in a single forward pass** without seeking back to patch previously-written bytes? A format "supports streaming" if a writer can produce a complete, valid output by only appending data — never modifying bytes that have already been emitted. (Correspondingly, can a reader consume the format in a single forward pass?)
 3. **Existing implementations that support chunk interleaving** — tools or libraries that actively interleave chunks from multiple members rather than writing each member end-to-end before starting the next.
 4. **Theoretical support of interleaving on the wire** — does the format specification allow or describe interleaving, even if no common implementation exploits it?
 
@@ -41,21 +41,21 @@ Evaluate existing archive and container formats against the following criteria:
 
 ### Summary Table
 
-| Format | Popularity | Sequential-write streaming | Sequential-read streaming | Interleaving: implementations | Interleaving: theoretical |
+| Format | Popularity | Write-streaming (no patching) | Read-streaming (forward-only) | Interleaving: implementations | Interleaving: theoretical |
 |---|---|---|---|---|---|
 | TAR | ★★★★★ | ✅ Yes | ✅ Yes | ❌ None known | ❌ Not in spec |
 | CPIO | ★★★☆☆ | ✅ Yes | ✅ Yes | ❌ None known | ❌ Not in spec |
 | ar | ★★☆☆☆ | ✅ Yes | ✅ Yes | ❌ None known | ❌ Not in spec |
-| ZIP | ★★★★★ | ⚠️ Write-only (data descriptor) | ❌ Requires seek for central dir | ❌ None known | ❌ Not in spec |
-| 7-Zip | ★★★★☆ | ❌ No | ❌ No | ❌ None known | ❌ Not in spec |
-| RAR | ★★★☆☆ | ⚠️ Partial | ⚠️ Partial | ❌ None known | ❌ Not in spec |
+| ZIP | ★★★★★ | ⚠️ Yes with data descriptors | ❌ Requires seek for central dir | ❌ None known | ❌ Not in spec |
+| 7-Zip | ★★★★☆ | ❌ No (must patch start header) | ❌ No | ❌ None known | ❌ Not in spec |
+| RAR | ★★★☆☆ | ⚠️ Partial (may need patching) | ⚠️ Partial | ❌ None known | ❌ Not in spec |
 | Ogg | ★★★☆☆ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec |
-| Matroska / MKV | ★★★★☆ | ⚠️ SeekHead needed | ✅ Yes (with cues) | ✅ Native interleaving | ✅ Yes — in spec |
+| Matroska / MKV | ★★★★☆ | ⚠️ Yes if SeekHead omitted | ✅ Yes (without SeekHead) | ✅ Native interleaving | ✅ Yes — in spec |
 | WebM | ★★★☆☆ | ⚠️ Same as Matroska | ✅ Yes | ✅ Native interleaving | ✅ Yes — in spec |
 | MPEG-TS | ★★★★☆ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec |
 | MPEG-PS | ★★★☆☆ | ✅ Yes | ✅ Yes | ✅ Native multiplexing | ✅ Yes — in spec |
-| ASF / WMV / WMA | ★★★☆☆ | ✅ Yes | ✅ Yes | ✅ Native interleaving | ✅ Yes — in spec |
-| CAF | ★★☆☆☆ | ✅ Yes | ✅ Yes | ✅ Audio tracks | ✅ Yes — in spec |
+| ASF / WMV / WMA | ★★★☆☆ | ⚠️ Header needs file size | ✅ Yes | ✅ Native interleaving | ✅ Yes — in spec |
+| CAF | ★★☆☆☆ | ✅ Yes (size -1 = unknown) | ✅ Yes | ✅ Audio tracks | ✅ Yes — in spec |
 | Framing (custom) | N/A | ✅ Yes | ✅ Yes | ✅ By design | ✅ By design |
 
 ---
@@ -68,7 +68,7 @@ Evaluate existing archive and container formats against the following criteria:
 
 **Format overview**: TAR is a purely sequential format. Each member consists of a 512-byte header block immediately followed by the file's data padded to a multiple of 512 bytes. A two-block all-zero trailer marks end-of-archive. Extensions (ustar / POSIX.1-2001 / GNU tar / pax) add long filenames, extended metadata, and sparse file support via additional header types, but the fundamental sequential layout is unchanged.
 
-**Sequential-write streaming**: ✅ Fully supported. A TAR stream can be produced in a single forward pass without knowing the total size in advance (useful e.g. with `tar -c | gzip | ssh host tar -xz`).
+**Sequential-write streaming**: ✅ Fully supported — no patching needed. A TAR stream can be produced in a single forward pass; each header's size field is filled before its data is written, and no previously-written bytes are ever modified. This is why `tar -c | gzip | ssh host tar -xz` works reliably.
 
 **Sequential-read streaming**: ✅ Fully supported. A TAR reader needs only a forward scan.
 
@@ -86,7 +86,7 @@ Evaluate existing archive and container formats against the following criteria:
 
 **Format overview**: CPIO has several variants (binary, old ASCII, new ASCII `newc`, CRC `newc`). All variants place a per-file header immediately before each file's data. A special `TRAILER!!!` entry marks end-of-archive. Like TAR, the format is inherently sequential.
 
-**Sequential-write streaming**: ✅ Fully supported.
+**Sequential-write streaming**: ✅ Fully supported — no patching needed. Each header is written with the file size, followed by the data.
 
 **Sequential-read streaming**: ✅ Fully supported.
 
@@ -104,7 +104,7 @@ Evaluate existing archive and container formats against the following criteria:
 
 **Format overview**: `ar` is the simplest archive format: a magic header `!<arch>\n` followed by a sequence of member records, each with a fixed-width ASCII header (60 bytes) and the member data. No compression. No seeking required.
 
-**Sequential-write streaming**: ✅ Fully supported.
+**Sequential-write streaming**: ✅ Fully supported — no patching needed. Each member header contains the size, followed by the data.
 
 **Sequential-read streaming**: ✅ Fully supported.
 
@@ -122,7 +122,7 @@ Evaluate existing archive and container formats against the following criteria:
 
 **Format overview**: ZIP stores each member as a Local File Header followed by (optionally compressed) data, followed by an optional Data Descriptor. A **Central Directory** at the very end of the file contains a summary of all members with their offsets. Most ZIP readers navigate via the Central Directory rather than scanning sequentially, making seek access essential for normal use.
 
-**Sequential-write streaming**: ⚠️ Partially possible. Using Data Descriptors (general-purpose bit 3 set), a writer can defer size/CRC values until after writing the data, enabling streaming write. The Central Directory is still written at the very end, which is fine for a write-only stream (e.g. piping to `ssh … | unzip`).
+**Sequential-write streaming**: ⚠️ Partially possible — no patching needed if using Data Descriptors (general-purpose bit 3 set). With bit 3, the CRC-32 and size fields in the Local File Header are zeroed; the actual values follow the compressed data in a Data Descriptor record. The Central Directory is appended at the very end — this is pure forward-only writing, no bytes are patched. However, not all ZIP readers support Data Descriptors correctly, and without bit 3 the writer must know sizes/CRCs before writing the Local File Header (requiring either buffering or seeking back to patch).
 
 **Sequential-read streaming**: ❌ Technically difficult. `unzip` traditionally seeks to the end to read the Central Directory first. Some implementations (notably `funzip` and streaming-aware extractors) can scan forward through Local File Headers, but this is unreliable because Local File Headers may have zeroed size fields when Data Descriptors are used, requiring the reader to parse compressed data to find the end of each member. This is a known, fundamental limitation.
 
@@ -140,7 +140,7 @@ Evaluate existing archive and container formats against the following criteria:
 
 **Format overview**: 7-Zip stores all metadata (headers, filenames, sizes, checksums, compression parameters) in a header block that is typically located **at the end** of the archive. The compressed payload(s) are stored in the body. Solid compression mode groups multiple files into a single large compressed stream.
 
-**Sequential-write streaming**: ❌ Not supported in general. The header is written after all compressed data. Some workarounds exist (storing the header at the front requires a seekable output), but standard `7z` requires a seekable output.
+**Sequential-write streaming**: ❌ Not supported — **requires patching**. The 7z format begins with a 32-byte SignatureHeader at offset 0 that contains the offset and size of the EndHeader (metadata block at the end of the archive). Since this offset is not known until all compressed data has been written, the writer must seek back to byte 12 and patch the SignatureHeader after writing is complete. Standard `7z` therefore requires a seekable output and cannot write to a pipe.
 
 **Sequential-read streaming**: ❌ Not supported without special handling. Some tools write the header at the start, but this is non-standard.
 
@@ -158,7 +158,7 @@ Evaluate existing archive and container formats against the following criteria:
 
 **Format overview**: RAR uses a block-based format with typed blocks for file headers, file data, end-of-archive, comments, etc. RAR4 and RAR5 have different block layouts. Recovery records are optionally appended.
 
-**Sequential-write streaming**: ⚠️ Partial. WinRAR and other tools can create RAR archives in streaming/pipe mode in some configurations, but metadata may be incomplete until the end of the archive.
+**Sequential-write streaming**: ⚠️ Partial — **may require patching**. RAR file headers include CRC and size fields. In some modes, WinRAR can write to a pipe, but the archive end marker and recovery records may require seek-back to finalize. Whether patching is needed depends on the specific RAR version and options used.
 
 **Sequential-read streaming**: ⚠️ Partial. The RAR specification and implementations can support forward scanning in some cases, but seek-based access is preferred.
 
@@ -180,7 +180,7 @@ Evaluate existing archive and container formats against the following criteria:
 - Multiple **sequential** logical bitstreams (chained streams, one ends before the next begins).
 - Multiple **concurrent** logical bitstreams (grouped streams, beginning of all streams before any data pages — used for audio+video multiplexing).
 
-**Sequential-write streaming**: ✅ Fully supported. Pages are written sequentially; no seek is required.
+**Sequential-write streaming**: ✅ Fully supported — no patching needed. Each Ogg page is self-contained with its own header, CRC, and segment table; pages are written sequentially and no previously-written bytes are ever modified.
 
 **Sequential-read streaming**: ✅ Fully supported. Pages can be demultiplexed by serial number in a single forward pass.
 
@@ -198,9 +198,9 @@ Evaluate existing archive and container formats against the following criteria:
 
 **Format overview**: Matroska is built on **EBML** (Extensible Binary Meta Language), a self-describing hierarchical binary format similar in concept to XML but binary. A Matroska file contains a `Segment` element which holds `Cluster` elements. Each `Cluster` contains `SimpleBlock` or `BlockGroup` elements, each tagged with a **TrackNumber**. Tracks are declared in a `TrackEntry` section at the start.
 
-**Sequential-write streaming**: ⚠️ Conditional. A `SeekHead` element at the start of the segment provides fast random access to top-level elements. If the `SeekHead` cannot be populated until writing is complete (because positions are unknown in advance), it can be written as a void/placeholder and rewritten, or omitted. `ffmpeg` and `mkvmerge` support streaming output mode. The EBML and Matroska specs explicitly describe a "streamable" subset.
+**Sequential-write streaming**: ⚠️ Possible without patching, but conditional. In streaming mode, the `SeekHead` element (which contains offsets to other top-level elements and would require patching) can be **omitted entirely**. The `Segment` element can use an unknown-size EBML length (all 1-bits), and `Cluster` elements are written sequentially. This produces a valid Matroska stream with no bytes ever patched. `ffmpeg -f matroska pipe:1` uses this mode. However, the resulting file lacks random-access metadata — it is a true stream, not a seekable file.
 
-**Sequential-read streaming**: ✅ Fully supported. A reader can scan through clusters and decode individual track blocks without a `SeekHead`, though seeking will be slow.
+**Sequential-read streaming**: ✅ Fully supported. A reader can scan through clusters and decode individual track blocks without a `SeekHead`; forward-only reading works correctly.
 
 **Chunk interleaving (implementations)**: ✅ Yes — native to the format. All Matroska muxers (`ffmpeg`, `mkvmerge`) interleave blocks from different tracks (video, audio, subtitle, chapters, attachments) at the cluster level. Audio and video blocks are interleaved to minimize buffer requirements during playback.
 
@@ -234,7 +234,7 @@ Evaluate existing archive and container formats against the following criteria:
 
 **Format overview**: MPEG-TS is built on fixed-size **188-byte packets**. Each packet carries a 13-bit **PID** (Packet Identifier) that associates it with a specific elementary stream (video, audio, subtitle, data). A **PAT** (Program Association Table) and **PMT** (Program Map Table) at well-known PIDs describe the composition of programs. This fixed-packet structure makes MPEG-TS trivially splittable and error-resilient.
 
-**Sequential-write streaming**: ✅ Fully supported and the primary intended use case. Broadcast encoders produce a continuous MPEG-TS stream in real time.
+**Sequential-write streaming**: ✅ Fully supported — no patching needed. Each 188-byte packet is self-contained and written forward-only. Broadcast encoders produce a continuous MPEG-TS stream in real time with no seek-back.
 
 **Sequential-read streaming**: ✅ Fully supported. Packets can be demultiplexed in a single forward scan by PID. Error recovery is possible even with packet loss (unlike most archive formats).
 
@@ -252,7 +252,7 @@ Evaluate existing archive and container formats against the following criteria:
 
 **Format overview**: MPEG-PS uses variable-length **pack** and **packet** structures rather than fixed-size transport packets. Elementary streams are identified by **stream IDs** in PES (Packetized Elementary Stream) headers.
 
-**Sequential-write streaming**: ✅ Supported.
+**Sequential-write streaming**: ✅ No patching needed — packs and PES packets are self-contained and written sequentially.
 
 **Sequential-read streaming**: ✅ Supported.
 
@@ -270,7 +270,7 @@ Evaluate existing archive and container formats against the following criteria:
 
 **Format overview**: ASF is a packet-based format with an object hierarchy. A **Header Object** describes streams and properties. **Data Object** contains interleaved **Data Packets**, each containing one or more **payloads** tagged by **Stream Number**.
 
-**Sequential-write streaming**: ✅ Supported.
+**Sequential-write streaming**: ⚠️ Conditional — the ASF Header Object contains a `File Properties Object` with `File Size` and `Data Packets Count` fields. In live/streaming scenarios, these are set to zero/sentinel values and never patched, producing a valid stream. When writing to a seekable file, implementations typically seek back to patch these fields. So no-patching streaming is possible but produces an imprecise header.
 
 **Sequential-read streaming**: ✅ Supported after reading the header.
 
@@ -288,7 +288,7 @@ Evaluate existing archive and container formats against the following criteria:
 
 **Format overview**: CAF uses a chunk-based layout similar in spirit to RIFF/AIFF but 64-bit clean. Chunks are identified by 4-byte type codes. The format supports multiple audio tracks and metadata.
 
-**Sequential-write streaming**: ✅ Supported (chunk size -1 indicates streaming).
+**Sequential-write streaming**: ✅ No patching needed — setting chunk size to `-1` signals that the size is unknown (streaming mode). All data is written forward-only.
 
 **Sequential-read streaming**: ✅ Supported.
 
