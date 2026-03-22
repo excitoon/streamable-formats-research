@@ -392,22 +392,24 @@ cmd1 3>&3
 
 **Direct higher-FD piping**: ❌ Not in POSIX sh.
 
-#### nushell
+#### Nushell
 
-**FD redirection**: TBD — nushell uses structured data pipelines and has a different model from traditional POSIX shells.
+**FD redirection**: ⚠️ Limited. Nushell supports `o>` (stdout to file), `e>` (stderr to file), and `o+e>` (both to file), plus `e>|` and `o+e>|` for piping stderr. However, Nushell **does not** support arbitrary higher FD manipulation — there is no `3>file`, `exec 3>file`, or `n>&m` syntax. This is a conscious design choice: Nushell focuses on structured data pipelines and cross-platform compatibility (Windows uses HANDLEs, not integer FDs). See [nushell/nushell#15650](https://github.com/nushell/nushell/issues/15650) for the open feature request.
 
-**Higher-FD piping**: TBD.
+**Higher-FD piping**: ❌ Not supported. Tools that require higher FD passing (e.g. bubblewrap `--json-status-fd`) cannot be used directly from Nushell; a bash wrapper is needed.
+
+**Workaround**: Wrap the external command in a bash one-liner called from Nushell, or use `save` with `--stderr` for two-stream capture.
 
 ### Summary Table: Shell Higher-FD Support
 
-| Feature | bash | zsh | fish | ksh | dash/sh |
-|---|---|---|---|---|---|
-| `n>file`, `n<file` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `n>&m` (FD duplication) | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `n| cmd` (pipe on FD n) | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Process substitution `<(cmd)` | ✅ | ✅ | ❌ | ✅ | ❌ |
-| `coproc` | ✅ | ✅ | ❌ | ✅ | ❌ |
-| Named pipe workaround | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Feature | bash | zsh | fish | ksh | dash/sh | nushell |
+|---|---|---|---|---|---|---|
+| `n>file`, `n<file` | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ (stdout/stderr only) |
+| `n>&m` (FD duplication) | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| `n| cmd` (pipe on FD n) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Process substitution `<(cmd)` | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ |
+| `coproc` | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ |
+| Named pipe workaround | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ Via bash wrapper |
 
 **Key finding**: No common POSIX shell provides a `cmd1 n| cmd2` syntax to pipe FD *n* of one command directly into FD *m* of another. All higher-FD inter-process communication requires either named pipes (FIFOs), process substitution, or explicit FD manipulation combined with subshells — all of which are more complex and less portable than the simple `|` operator.
 
@@ -436,23 +438,144 @@ This confirms that **embedding multiple streams inside a single archive/containe
 
 ### Open questions / TBD
 
-- TBD: Performance benchmarks comparing overhead of Ogg vs. MPEG-TS vs. LTV framing for high-throughput CLI pipelines.
-- TBD: Detailed analysis of nushell's FD/pipe model.
-- TBD: Survey of existing CLI tools (e.g. GNU parallel, pv, tee) and how they handle multi-stream output.
-- TBD: Exploration of whether a thin wrapper around TAR or CPIO with an interleaving extension could achieve parity with Ogg/MPEG-TS.
 - TBD: Feasibility of a new minimal open spec designed specifically for general-purpose multi-stream CLI piping (working name: "mux").
-- TBD: Analysis of `splice(2)` and zero-copy pipe chaining at the Linux kernel level for performance.
+
+---
+
+## Appendix A: Framing Overhead Comparison
+
+A practical concern when choosing a multi-stream container for CLI pipes is **framing overhead** — how many extra bytes per payload chunk does the format add?
+
+| Format | Header per chunk | Payload per chunk | Overhead % | Notes |
+|---|---|---|---|---|
+| **LTV (custom)** | 8 bytes (4 stream_id + 4 length) | Variable (any size) | < 0.01% at 64 KiB chunks | Minimal; no checksum, no sync |
+| **Ogg** | 27–282 bytes (27 fixed + 0–255 segment table) | Up to 65,025 bytes (255 × 255) | ~0.5–1% typical | Includes CRC-32 checksum; variable page size; segment table adds 1 byte per 255-byte segment |
+| **MPEG-TS** | 4 bytes | 184 bytes (fixed) | ~2.13% | Fixed 188-byte packets; includes sync byte for error recovery; adaptation field may reduce payload further |
+| **HTTP/2 framing** | 9 bytes | Up to 16,384 bytes (default) | ~0.05% at max frame | Well-defined; stream ID native; but designed for TCP, not pipes |
+| **Netstring** | ~5–10 bytes (`len:...,`) | Variable | < 0.01% at large sizes | ASCII length prefix; simple but no stream ID built in |
+
+**Key takeaway**: Custom LTV framing has the lowest overhead for high-throughput CLI pipes. Ogg and MPEG-TS add meaningful overhead but provide checksums (Ogg) or sync recovery (MPEG-TS) which matter for unreliable channels. For reliable UNIX pipes, the extra error-resilience features are less valuable, making LTV or Ogg the pragmatic choices.
+
+---
+
+## Appendix B: Survey of Existing CLI Multi-Stream Tools
+
+Several existing UNIX tools interact with multi-stream patterns. None of them solve the core multiplexing problem, but they illustrate the design space:
+
+#### `tee`
+
+Duplicates stdin to one or more files while also writing to stdout. This is a **fan-out** (1-to-N) tool, not a multiplexer. Combined with process substitution, it can feed multiple commands:
+```bash
+cmd | tee >(filter1 > out1) >(filter2 > out2) > /dev/null
+```
+Limitation: all consumers see the same data; there is no per-stream differentiation.
+
+#### `pv` (Pipe Viewer)
+
+Monitors data throughput on a single pipe. Writes progress information to stderr while passing stdin through to stdout unchanged. This is a single-stream tool that uses stderr as a side channel — exactly the hack the issue describes as inadequate.
+
+#### GNU Parallel
+
+Distributes work across multiple processes. With `--pipe`, it splits stdin into chunks and fans them out to parallel instances of a command. Output is collected and serialized back to stdout (in order by default). This is a **parallelization** tool, not a multiplexer: the output is a single merged stream, not interleaved tagged sub-streams.
+
+```bash
+A | parallel --pipe B | C
+```
+
+GNU Parallel explicitly avoids interleaving output from different jobs — each job's output is buffered and printed atomically. This is useful but orthogonal to the multi-stream multiplexing problem.
+
+#### `socat`
+
+A powerful relay tool that can connect diverse I/O channels (pipes, sockets, FDs, PTYs). It can bridge higher FDs to sockets or files, but operates on exactly two endpoints (unidirectional or bidirectional). It does not multiplex multiple streams into one.
+
+#### `multiplex` / `tmux` / `screen`
+
+Terminal multiplexers that manage multiple virtual terminals over a single connection. They solve a UI problem (multiple interactive sessions), not a data-pipeline multiplexing problem. Their wire protocols (e.g., tmux's control mode) are not designed for general-purpose stream interleaving.
+
+**Conclusion**: No existing general-purpose UNIX CLI tool provides transparent multi-stream multiplexing over a single pipe. The gap identified in the issue is real and unfilled by current tooling.
+
+---
+
+## Appendix C: TAR/CPIO Interleaving Extension Feasibility
+
+Could TAR or CPIO be extended to support chunk interleaving without breaking existing readers?
+
+#### TAR with PAX Extended Headers
+
+The POSIX **pax** interchange format allows arbitrary key-value extended header records before each file entry. In theory, a convention could be designed:
+
+1. Each "chunk" is written as a small TAR member with a special filename convention (e.g., `.streams/stream-0/chunk-0042`).
+2. Chunks from different streams are interleaved as separate TAR members.
+3. A demultiplexer reads the stream, groups chunks by stream name, and reassembles each stream.
+
+**Pros**:
+- Backwards-compatible: standard `tar -t` would list all chunks; `tar -x` would extract them as files.
+- No format changes needed; pure convention.
+- `libarchive` streaming API could produce and consume this.
+
+**Cons**:
+- Massive overhead: each chunk requires a 512-byte TAR header (minimum), so a 4 KiB payload chunk has ≥12.5% framing overhead. A 64 KiB chunk still has ~0.8% overhead, but the 512-byte alignment padding adds more waste for non-aligned sizes.
+- No standard demultiplexer exists; every consumer would need custom logic.
+- TAR's member-at-a-time model means existing tools (`tar -x`) would create thousands of small files rather than reassembling streams.
+- Granularity is limited by TAR header size: sub-512-byte chunks are wasteful.
+
+#### CPIO Interleaving
+
+The same approach could work with CPIO's smaller headers (76 or 110 bytes for `newc`), reducing per-chunk overhead slightly. The same fundamental limitations apply: no existing tool would understand the convention, and the overhead is still far higher than a purpose-built framing format.
+
+**Verdict**: While technically possible, extending TAR or CPIO for interleaving produces a worse result than using Ogg or custom LTV framing in every measurable dimension (overhead, tooling, simplicity). The only advantage would be superficial compatibility with `tar`/`cpio` commands, which would not actually be useful since those tools would not reassemble the streams.
+
+---
+
+## Appendix D: Zero-Copy Pipe Performance (`splice(2)` and `vmsplice(2)`)
+
+For high-throughput CLI pipelines, the cost of copying data through userspace is significant. Linux provides kernel-level zero-copy mechanisms:
+
+#### `splice(2)`
+
+Moves data between two file descriptors **without copying through userspace**, as long as at least one FD is a pipe. Internally, Linux pipes are implemented as ring buffers of `struct pipe_buffer` entries, each pointing to a kernel memory page. `splice()` transfers page references (pointer + refcount) rather than copying data, achieving true zero-copy.
+
+- **Default pipe buffer**: 16 slots × 4 KiB pages = 64 KiB. Can be increased via `fcntl(F_SETPIPE_SZ)` up to `/proc/sys/fs/pipe-max-size` (typically 1 MiB).
+- **Atomicity**: Writes ≤ `PIPE_BUF` (4 KiB on Linux) are atomic. Larger writes may be split across multiple pipe buffer slots.
+- **Use case**: A multiplexer could `splice()` data from input FDs into the pipe without ever touching the payload in userspace — only the framing headers need to be constructed in userspace.
+
+#### `vmsplice(2)`
+
+Maps **userspace memory pages** into a pipe's ring buffer without copying. This allows a writer to construct data in userspace and then zero-copy-transfer it into a pipe. Combined with `splice()` on the reader side, an entire pipeline can avoid memcpy for payload data.
+
+#### `tee(2)` (kernel)
+
+Duplicates data from one pipe to another without consuming it (copy-on-write semantics). Useful for fan-out patterns where multiple consumers need the same data.
+
+#### Implications for Multi-Stream Pipe Format
+
+A well-designed multiplexer could:
+
+1. Use `splice(2)` to move payload data from source FDs into the output pipe without userspace copies.
+2. Use `vmsplice(2)` to inject framing headers (stream ID + length) constructed in userspace.
+3. Achieve near-wire-speed throughput limited only by pipe buffer size and scheduling overhead.
+
+This makes the **LTV custom framing** approach even more attractive: its 8-byte headers are trivially constructed in userspace and can be vmspliced, while payload data can be spliced directly from source FDs, achieving zero-copy for the bulk of the data.
+
+**Note**: `splice(2)` and `vmsplice(2)` are Linux-specific. macOS provides no equivalent (the `splice` name is used for a different purpose). FreeBSD has `sendfile(2)` but not `splice`. Portable code must fall back to `read(2)`/`write(2)` on non-Linux systems.
 
 ---
 
 ## References
 
 - [RFC 3533 — The Ogg Encapsulation Format Version 0](https://www.rfc-editor.org/rfc/rfc3533)
+- [Ogg Framing Specification (Xiph.Org)](https://xiph.org/ogg/doc/framing.html)
 - [Matroska Specification](https://www.matroska.org/technical/specs/index.html)
 - [EBML Specification (RFC 8794)](https://www.rfc-editor.org/rfc/rfc8794)
 - [ISO 13818-1 — MPEG-2 Systems (Transport Stream)](https://www.iso.org/standard/74427.html)
+- [MPEG-TS Introduction (TSDuck)](https://tsduck.io/docs/mpegts-introduction.pdf)
 - [ZIP Application Note (PKWARE)](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT)
 - [GNU tar manual](https://www.gnu.org/software/tar/manual/)
+- [libarchive — Multi-format streaming archive library](http://libarchive.org/)
 - [Bash Reference Manual — Redirections](https://www.gnu.org/software/bash/manual/bash.html#Redirections)
 - [POSIX Shell Command Language — Redirection](https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html#tag_18_07)
+- [nushell FD support issue (nushell/nushell#15650)](https://github.com/nushell/nushell/issues/15650)
 - [ASF Specification (Microsoft)](https://learn.microsoft.com/en-us/windows/win32/wmformat/asf-specification)
+- [splice(2) — Linux man page](https://www.man7.org/linux/man-pages/man2/splice.2.html)
+- [vmsplice(2) — Linux man page](https://www.man7.org/linux/man-pages/man2/vmsplice.2.html)
+- [GNU Parallel Tutorial](https://www.gnu.org/software/parallel/parallel_tutorial.html)
