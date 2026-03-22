@@ -942,6 +942,92 @@ Evaluated on streaming (no patching), interleaving, general-purpose suitability,
 - **MP4 (regular)** — moov atom requires pre-computation or patching (fMP4 streams but is complex).
 - **FLV** — streaming and interleaving, but deprecated (Flash EOL 2020), single stream ID field unused.
 
+### 7z extractability and stream naming
+
+A practical requirement: can the output be listed and extracted using `7z` (p7zip / 7-Zip), the most versatile command-line archive tool? And can individual streams carry **file names** (not just numeric IDs) so extracted data is human-identifiable?
+
+#### Formats supported by 7z for extraction/listing
+
+`7z` (via p7zip) can list and extract the following formats from the 33 analyzed:
+
+| Format | 7z support | Streaming (no patching) | Interleaving | File names |
+|---|---|---|---|---|
+| **TAR** | ✅ `7z l file.tar` | ✅ Yes | ❌ No | ✅ Full paths (up to 256 chars; PAX: unlimited) |
+| **CPIO** | ✅ `7z l file.cpio` | ✅ Yes | ❌ No | ✅ Full paths |
+| **ar** | ✅ `7z l file.a` | ✅ Yes | ❌ No | ✅ Short names (16 chars; extended: longer) |
+| **ZIP** | ✅ `7z l file.zip` | ⚠️ Conditional | ❌ No | ✅ Full paths |
+| **7-Zip** | ✅ `7z l file.7z` | ❌ No (patching) | ❌ No | ✅ Full paths |
+| **RAR** | ✅ `7z l file.rar` | ⚠️ Partial | ❌ No | ✅ Full paths |
+| **CAB** | ✅ `7z l file.cab` | ❌ No (patching) | ❌ No | ✅ Full paths |
+| **WIM** | ✅ `7z l file.wim` | ❌ No (patching) | ❌ No | ✅ Full paths |
+| **ISO 9660** | ✅ `7z l file.iso` | ❌ No (pre-computed) | ❌ No | ✅ Full paths |
+| **XAR** | ✅ `7z l file.xar` | ❌ No (pre-computed) | ❌ No | ✅ Full paths |
+| **LHA/LZH** | ✅ `7z l file.lzh` | ✅ Yes | ❌ No | ✅ Full paths |
+
+**Not supported by 7z**: Ogg, MPEG-TS, MPEG-PS, Matroska/WebM, ASF, CAF, HTTP/2, SSH, HTTP/1.1, MIME, FLV, NUT, WARC, Avro, Protobuf, QUIC, MP4, AVI/RIFF, IFF.
+
+**Key finding**: Among all 7z-extractable formats, **none support interleaving**. Every 7z-compatible format is strictly sequential — files must be written one at a time, fully, before the next begins. This means:
+
+- **No existing format simultaneously satisfies all three requirements**: 7z-extractable + streaming (no patching) + interleaving.
+- The best 7z-compatible streaming formats (TAR, CPIO, LHA/LZH) support file names natively but lack interleaving entirely.
+- ZIP is 7z-extractable and has file names, but streaming requires data descriptors (conditional), and interleaving is not supported.
+
+#### Stream naming (file names per stream)
+
+For multi-stream pipe use, each logical stream should be identifiable by a **name** (e.g., a file path like `output.csv` or `metadata.json`), not just a numeric index. Here's how the relevant formats handle naming:
+
+| Format | Stream naming mechanism | Named? |
+|---|---|---|
+| **TAR** | File path in 512-byte header (ustar: 256 chars; PAX: unlimited) | ✅ Full paths |
+| **CPIO** | File path in header (variable length) | ✅ Full paths |
+| **ZIP** | File path in Local File Header + Central Directory | ✅ Full paths |
+| **Ogg** | 32-bit serial number (integer only) | ❌ Numeric ID only — name requires application-level convention |
+| **MPEG-TS** | 13-bit PID number | ❌ Numeric ID only — PAT/PMT carry service names, not file names |
+| **Matroska** | Track Name element (UTF-8 string) in TrackEntry | ✅ Track names |
+| **HTTP/2** | 31-bit stream ID (integer) + HEADERS frame can carry `:path` | ⚠️ Possible via HTTP headers, but heavyweight |
+| **SSH** | Channel ID (integer) + channel type string at open | ⚠️ Channel type only (e.g., "session"), not a filename |
+| **NUT** | Stream ID (integer) + stream header metadata | ⚠️ Metadata possible but no standard filename field |
+| **QUIC** | 62-bit stream ID (integer) | ❌ Numeric ID only |
+| **FLV** | Tag type byte (audio/video/script) | ❌ Fixed types, no naming |
+| **MP4/fMP4** | Track Name box (udta/name) or handler name | ⚠️ Possible but non-standard |
+| **Protobuf** | Field tags (integers) — names in .proto schema only | ❌ Numeric tags only at wire level |
+| **Custom LTV** | Designer's choice — can include name field | ✅ If designed with name support |
+
+**Finding**: Only archive formats (TAR, CPIO, ZIP) and Matroska natively support human-readable file names per stream. All protocol-style multiplexers (HTTP/2, SSH, QUIC, Ogg) use numeric stream IDs — file name mapping must happen at the application level (e.g., a manifest message at the start of the stream that maps stream ID → file name).
+
+#### TAR-based interleaving workaround
+
+Given the requirement for 7z extractability + file names, a **TAR-based approach** deserves reconsideration despite its sequential nature. The idea (detailed in Appendix C) is to write interleaved chunks as individual TAR members with a naming convention:
+
+```
+.streams/output.csv/chunk-000001      (4096 bytes of output.csv data)
+.streams/metadata.json/chunk-000001   (512 bytes of metadata.json data)
+.streams/output.csv/chunk-000002      (4096 bytes of output.csv data)
+...
+```
+
+**Pros**: `7z l file.tar` works, file names are visible, any TAR tool can extract, streaming write (no patching).
+**Cons**: ~512 bytes overhead per chunk (TAR header per member), reassembly required (chunks must be concatenated by stream name), not true multiplexing — it's a hack on a sequential format.
+
+At 4 KiB payload chunks, TAR member overhead is ~12.5% (512-byte header per 4096-byte payload). At 64 KiB chunks, overhead drops to ~0.8% — still 80× higher than custom LTV framing.
+
+#### Intersection analysis
+
+Placing all requirements together:
+
+| Requirement | TAR (interleaved hack) | Ogg | HTTP/2 framing | Custom LTV | Matroska |
+|---|---|---|---|---|---|
+| Streaming (no patching) | ✅ | ✅ | ✅ | ✅ | ⚠️ Conditional |
+| Interleaving | ✅ (via naming convention) | ✅ Native | ✅ Native | ✅ By design | ✅ Native |
+| File names | ✅ Native (paths in headers) | ❌ Numeric IDs | ⚠️ Via HTTP headers | ✅ If designed in | ✅ Track names |
+| 7z extractable | ✅ `7z l file.tar` | ❌ | ❌ | ❌ | ❌ |
+| Per-stream tombstones | ❌ (container-level only) | ✅ EOS flag | ✅ END_STREAM | ✅ If designed in | ❌ |
+| Low overhead | ❌ (~0.8–12.5%) | ✅ (~0.5–1%) | ✅ (~0.05%) | ✅ (~0.01%) | ✅ (~0.1–1%) |
+
+**Core trade-off**: TAR is the **only** format that is simultaneously 7z-extractable, streaming-writable, and can carry file names — but it achieves "interleaving" only through a naming convention (each chunk is a separate TAR member), with significant overhead and no per-stream tombstones. Every native multiplexing format (Ogg, HTTP/2, QUIC, NUT) fails the 7z extractability test.
+
+**Practical conclusion**: If 7z extractability is a hard requirement, TAR with interleaved chunk members is the only viable path — accepting its overhead and the need for a reassembly tool. If 7z extractability can be relaxed (e.g., a dedicated `mux` tool is acceptable), then a custom LTV format with file name support and per-stream tombstones is the cleanest solution.
+
 ### Open questions / TBD
 
 - TBD: Feasibility of a new minimal open spec designed specifically for general-purpose multi-stream CLI piping (working name: "mux"). HTTP/2's 9-byte frame header, QUIC's per-stream FIN bit, Ogg's page structure, NUT's startcode sync, and HTTP/1.1's chunked encoding (hex-length + extensions) are the strongest prior art to draw from.
