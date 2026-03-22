@@ -195,7 +195,11 @@ Evaluate existing archive and container formats against the following criteria:
 
 **Chunk interleaving (theoretical)**: ✅ Fully specified in RFC 3533. The Ogg page structure explicitly carries a stream serial number and granule position to support arbitrary interleaving.
 
-**Conclusion for multi-stream use**: Ogg is well-suited for multi-stream interleaved streaming. Critically, **RFC 3533 is general-purpose by design** — it defines a bitstream container, not a multimedia format. The multimedia association comes from the codecs commonly carried inside Ogg (Vorbis, Opus, Theora), not from the container spec itself. An Ogg stream carrying arbitrary data chunks tagged by stream serial number is fully compliant with the RFC. The major limitation is that existing tooling (`libogg`, `oggenc`, `ffmpeg`) is multimedia-oriented — a general-purpose CLI multiplexer using Ogg would need a thin wrapper over `libogg` or a clean-room page writer (which is simple given the page format).
+**Conclusion for multi-stream use**: Ogg is technically well-suited for multi-stream interleaved streaming. RFC 3533 defines it as a **general-purpose bitstream encapsulation format** — the spec itself is codec-agnostic.
+
+**However, in practice Ogg is entirely a multimedia format.** No general-purpose archive tool recognizes it — you cannot `7z x file.ogg` or `tar tf file.ogg`. Every existing implementation (`libogg`, `oggenc`, `oggz`, `ffmpeg`, VLC) is audio/video-oriented. The `.ogg`/`.ogv`/`.oga` extensions are universally associated with multimedia. File managers, archive utilities, and operating systems all classify Ogg as "audio/video container." Using Ogg for arbitrary data multiplexing would be spec-compliant but tooling-incompatible — a general-purpose CLI multiplexer would need to write Ogg pages directly (the format is simple: 27-byte header + segment table + data, ~200 lines of C), but no user would expect `file.ogg` to contain non-multimedia data, and no existing tool would help them inspect or extract it.
+
+This gap between "general-purpose by specification" and "multimedia-only in practice" is Ogg's fundamental limitation as a candidate for general-purpose pipe multiplexing.
 
 ---
 
@@ -637,13 +641,15 @@ The strongest requirement is a format that is **not multimedia-specific** — on
 
 | Rank | Format | Year | Popularity | General-purpose? | Notes |
 |---|---|---|---|---|---|
-| 1 | **Ogg** | 2003 | ★★★☆☆ | ✅ By spec (RFC 3533) | Spec defines "general-purpose bitstream encapsulation"; multimedia association is by convention only |
+| 1 | **Ogg** | 2003 | ★★★☆☆ | ✅ By spec (RFC 3533) | Spec says "general-purpose bitstream encapsulation" — but **all existing tooling is multimedia-only** (`7z x file.ogg` won't work; no archive utility recognizes it) |
 | 2 | **HTTP/2 framing** | 2015 | ★★★★★ | ✅ By design | Stream multiplexer for arbitrary data; but carries protocol complexity beyond just framing |
 | 3 | **HTTP/1.1 chunked** | 1997 | ★★★★★ | ✅ By design | Excellent single-stream framing; chunk extensions allow stream tagging in theory but no implementations exist |
 | 4 | **SSH channels** | 1995 | ★★★★★ | ✅ By design | Proven channel multiplexing; but encryption/key-exchange overhead is unnecessary for local pipes |
 | 5 | **Custom LTV** | — | N/A | ✅ By definition | Zero legacy baggage; trivial to implement; but no established standard/tooling |
 
-**Ogg** (RFC 3533, 2003) is the **best general-purpose candidate among established formats**. Despite its reputation as "the Vorbis/Opus container," RFC 3533 is explicitly a general-purpose bitstream encapsulation format — it defines pages, stream serial numbers, and granule positions with no multimedia-specific semantics. An Ogg stream carrying arbitrary tagged data chunks is fully compliant. It has IETF standardization, clean implementations (`libogg` in C, crates in Rust, packages in Python/Go), and ~0.5–1% framing overhead with CRC-32 integrity. The only real limitation is that **existing tooling assumes multimedia content** — a general-purpose multiplexer would need a thin wrapper or a clean-room page writer (the page format is simple: 27-byte header + segment table + data).
+**Ogg** (RFC 3533, 2003) is the **best general-purpose candidate among established formats by specification**. Despite its reputation as "the Vorbis/Opus container," RFC 3533 is explicitly a general-purpose bitstream encapsulation format — it defines pages, stream serial numbers, and granule positions with no multimedia-specific semantics. An Ogg stream carrying arbitrary tagged data chunks is fully spec-compliant. It has IETF standardization, clean implementations (`libogg` in C, crates in Rust, packages in Python/Go), and ~0.5–1% framing overhead with CRC-32 integrity.
+
+**Critical caveat**: In practice, Ogg is entirely a multimedia format. No general-purpose archive tool can handle it — `7z x file.ogg` does not work, `file(1)` reports it as audio/video, and every existing library/tool assumes multimedia content. Using Ogg for arbitrary data would mean writing Ogg pages directly (the page format is simple enough for a clean-room implementation) while accepting that no user or tool in the ecosystem would recognize the result as anything but a broken media file. This gap between spec and ecosystem is the central tension.
 
 **HTTP/2 framing** (RFC 7540, 2015) is the most widely deployed general-purpose multiplexing format in the world, with universal browser/server/CDN support. Its 9-byte frame header with 31-bit stream ID is exactly the "stream N, chunk M" primitive needed. However, extracting just the framing layer from HTTP/2 means ignoring most of the spec (HPACK, flow control, SETTINGS, stream priorities) — it would be using ~5% of a complex protocol. Suitable as prior art / inspiration rather than direct reuse.
 
@@ -667,7 +673,7 @@ These are proven and well-tooled but carry multimedia-specific framing (PIDs, PA
 
 Evaluated on streaming (no patching), interleaving, general-purpose suitability, and **stream finalization (tombstones)** — the ability to distinguish clean completion from truncation on a per-stream basis.
 
-1. **Ogg** — the best fit for general-purpose use. IETF standard (RFC 3533), explicitly general-purpose by spec, clean page-based multiplexing with CRC integrity, ~0.5–1% overhead. **Per-stream EOS flag** provides clean tombstones. Requires wrapping `libogg` or writing a simple page emitter (~200 lines of C).
+1. **Ogg** — the best fit **by specification** for general-purpose use. IETF standard (RFC 3533), explicitly general-purpose by spec, clean page-based multiplexing with CRC integrity, ~0.5–1% overhead, **per-stream EOS flag** for tombstones. **Major practical limitation**: all existing tooling is multimedia-only — no archive utility recognizes Ogg for arbitrary data (`7z x file.ogg` won't work). Requires a clean-room page writer (~200 lines of C) and accepting that no existing ecosystem tool will help users inspect the result.
 
 2. **Custom LTV framing** — minimal overhead (~0.01%), trivial to implement (8-byte header: stream_id + length), language-agnostic. **Must include an explicit end-of-stream frame type** in the design to provide tombstone functionality. Best choice when no legacy format compatibility is needed and simplicity is paramount.
 
